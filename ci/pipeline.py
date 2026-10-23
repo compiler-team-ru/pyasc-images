@@ -132,6 +132,15 @@ def inspect_image(image):
     if result.returncode:
         if re.search(r'not found|manifest unknown|404', result.stderr, re.I):
             return None
+        # GHCR reports denied rather than 404 before a package's first push.
+        # Only treat it as absent when the authenticated package API confirms 404.
+        if re.search(r'denied|unauthorized', result.stderr, re.I):
+            package = image.split('/')[-1].split(':')[0].split('@')[0]
+            assert image.startswith('ghcr.io/compiler-team-ru/pyasc-')
+            probe = subprocess.run(['gh', 'api', f'orgs/compiler-team-ru/packages/container/{package}'],
+                                   capture_output=True, text=True)
+            if probe.returncode and 'HTTP 404' in probe.stderr:
+                return None
         raise RuntimeError(result.stderr)
     return json.loads(result.stdout)['digest']
 

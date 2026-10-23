@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -e
-if [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then
+if [ -f /usr/local/Ascend/cann/set_env.sh ]; then
+    source /usr/local/Ascend/cann/set_env.sh
+elif [ -f /usr/local/Ascend/ascend-toolkit/set_env.sh ]; then
     source /usr/local/Ascend/ascend-toolkit/set_env.sh
 else
     source /usr/local/Ascend/ascend-toolkit/latest/set_env.sh
