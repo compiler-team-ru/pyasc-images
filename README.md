@@ -49,6 +49,22 @@ Record the chosen image digest with every result. Descriptive tags include
 the wheel version, CANN, Ubuntu, Python, recipe identity and architecture;
 they are never overwritten. There is no ambiguous `latest` experiment tag.
 
+To vary only CANN, use one release's `matrix.json` and keep Ubuntu, Python,
+architecture, source and wheel fixed:
+
+```bash
+for cann in 9.0.0 9.2.0; do
+  image=$(jq -er --arg cann "$cann" '
+    .cells[] | select(.status == "pass"
+      and .environment.ubuntu == "22.04"
+      and .environment.python == "3.11"
+      and .environment.arch == "amd64"
+      and .environment.cann == $cann) | .image' matrix.json) || exit 1
+  docker run --rm --ulimit nofile=65536:65536 \
+    -v "$PWD:/workspace" "$image" python3 /workspace/experiment.py
+done
+```
+
 ## Build inputs and contents
 
 `inputs.lock.json` pins Ubuntu image digests, CPython source archives,
