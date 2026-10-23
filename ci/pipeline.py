@@ -106,9 +106,15 @@ def plan():
         prior = asset_json(image_releases[tag], 'matrix.json') if tag in image_releases else {}
         previous = prior.get('cells', [])
         todo = pending(cells, previous, selected)
+        passed_keys = {r['key'] for r in previous if r['status'] == 'pass'}
+        paired = sum(c['environment']['arch'] == 'amd64' and c['key'] in passed_keys
+                     and c['key'].rsplit('-', 1)[0] + '-arm64' in passed_keys for c in cells)
+        complete_manifests = sum(bool(m.get('digest')) and m.get('status', 'pass') == 'pass'
+                                 for m in prior.get('manifests', []))
+        needs_report = bool(todo or not prior or paired != complete_manifests)
         chosen = {'publication': publication, 'cells': cells, 'previous': previous,
-                  'tag': tag, 'recipe': recipe, 'pending': todo}
-        if todo:
+                  'tag': tag, 'recipe': recipe, 'pending': todo, 'needs_report': needs_report}
+        if needs_report:
             break
     assert chosen, 'No complete wheel publication'
     Path('work').mkdir(exist_ok=True)
@@ -116,6 +122,7 @@ def plan():
     output('matrix', json.dumps({'include': [{'key': c['key'], 'runner': c['runner']} for c in chosen['pending']]}))
     output('count', len(chosen['pending']))
     output('tag', chosen['tag'])
+    output('report', str(chosen['needs_report']).lower())
     print(json.dumps({'version': chosen['publication']['version'], 'pending': len(chosen['pending']), 'cells': len(chosen['cells'])}))
 
 
@@ -292,15 +299,18 @@ def finish():
         if len(pair) != 2 or not all(c['status'] == 'pass' for c in pair):
             continue
         tag = merge_pair(*pair)
-        digest = inspect_image(tag)
-        if not digest:
-            run('docker', 'buildx', 'imagetools', 'create', '-t', tag, *(c['image'] for c in pair))
+        try:
             digest = inspect_image(tag)
-        raw = json.loads(subprocess.check_output(['docker', 'buildx', 'imagetools', 'inspect', tag, '--raw'], text=True))
-        actual = {m['platform']['architecture']: m['digest'] for m in raw['manifests']
-                  if m.get('platform', {}).get('os') == 'linux'}
-        assert actual == {c['environment']['arch']: c['digest'] for c in pair}, 'Mixed manifest children'
-        manifests.append({'tag': tag, 'digest': digest, 'children': actual})
+            if not digest:
+                run('docker', 'buildx', 'imagetools', 'create', '-t', tag, *(c['image'] for c in pair))
+                digest = inspect_image(tag)
+            raw = json.loads(subprocess.check_output(['docker', 'buildx', 'imagetools', 'inspect', tag, '--raw'], text=True))
+            actual = {m['platform']['architecture']: m['digest'] for m in raw['manifests']
+                      if m.get('platform', {}).get('os') == 'linux'}
+            assert actual == {c['environment']['arch']: c['digest'] for c in pair}, 'Mixed manifest children'
+            manifests.append({'tag': tag, 'digest': digest, 'children': actual, 'status': 'pass'})
+        except Exception as error:
+            manifests.append({'tag': tag, 'status': 'failed', 'reason': str(error)})
     report = {'schema_version': 1, 'version': plan_data['publication']['version'],
               'source_sha': plan_data['publication']['source_sha'], 'recipe': plan_data['recipe'],
               'cells': cells, 'manifests': manifests,
@@ -318,7 +328,7 @@ def finish():
     with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
         summary.write(f'Verified images: {passed}/{len(cells)}. Multiarch manifests: {len(manifests)}.\n')
     print(f'Verified {passed}/{len(cells)} images')
-    if any(c['status'] == 'failed' for c in cells):
+    if any(c['status'] == 'failed' for c in cells) or any(m['status'] == 'failed' for m in manifests):
         raise SystemExit('Some cells failed; the durable report lists their status and reason.')
 
 
