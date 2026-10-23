@@ -38,17 +38,30 @@ def validate_publication(publication):
         assert wheel['llvm']['revision']
 
 
+def environments(lock, recipe):
+    assert all(lock[k] for k in ('ubuntu', 'cann', 'python')), 'Incomplete input lock'
+    cells = []
+    for ubuntu, cann, python, arch in itertools.product(lock['ubuntu'], lock['cann'], lock['python'], ARCH):
+        environment = {'ubuntu': ubuntu, 'ubuntu_image': lock['ubuntu'][ubuntu][arch],
+                       'python': python, 'python_source': lock['python'][python],
+                       'cann': cann, 'cann_installer': lock['cann'][cann][arch],
+                       'arch': arch, 'simulator': lock['simulator'], 'recipe': recipe}
+        env_id = identity(environment)
+        cells.append({'key': f'u{ubuntu}-c{cann}-p{python}-{arch}', 'environment': environment,
+                      'environment_id': env_id, 'environment_image': f'{REGISTRY}/pyasc-env:{env_id}',
+                      'runner': 'ubuntu-24.04-arm' if arch == 'arm64' else 'ubuntu-24.04'})
+    return cells
+
+
 def expand(lock, publication, recipe, environment_recipe):
     validate_publication(publication)
     assert all(lock[k] for k in ('ubuntu', 'cann', 'python')), 'Incomplete input lock'
     cells = []
-    for ubuntu, cann, python, arch in itertools.product(lock['ubuntu'], lock['cann'], lock['python'], ARCH):
+    for base in environments(lock, environment_recipe):
+        environment = base['environment']
+        ubuntu, cann, python, arch = (environment[k] for k in ('ubuntu', 'cann', 'python', 'arch'))
         target = f'cp{python.replace(".", "")}-{ARCH[arch]}'
-        environment = {'ubuntu': ubuntu, 'ubuntu_image': lock['ubuntu'][ubuntu][arch],
-                       'python': python, 'python_source': lock['python'][python],
-                       'cann': cann, 'cann_installer': lock['cann'][cann][arch],
-                       'arch': arch, 'simulator': lock['simulator'], 'recipe': environment_recipe}
-        env_id = identity(environment)
+        env_id = base['environment_id']
         cell = {'key': f'u{ubuntu}-c{cann}-p{python}-{arch}', 'environment': environment,
                 'environment_id': env_id, 'environment_image': f'{REGISTRY}/pyasc-env:{env_id}',
                 'version': publication['version'], 'source_sha': publication['source_sha'],

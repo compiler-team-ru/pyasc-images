@@ -1,0 +1,53 @@
+name: Prepare CANN environments
+on:
+  workflow_dispatch:
+    inputs:
+      cells:
+        description: 'Explicit comma-separated environment cell keys'
+        required: true
+        type: string
+permissions:
+  contents: read
+# Serialize with final-image assembly to preserve immutable environment tags.
+concurrency:
+  group: simulator-images
+  cancel-in-progress: false
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - id: plan
+        env:
+          INPUT_CELLS: ${{ inputs.cells }}
+        run: python3 ci/pipeline.py plan-environments
+  environment:
+    needs: plan
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          CELL_KEY: ${{ matrix.key }}
+        run: python3 ci/pipeline.py environment

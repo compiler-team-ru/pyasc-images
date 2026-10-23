@@ -10,7 +10,7 @@ import sys
 import urllib.error
 import urllib.request
 
-from matrix import expand, file_hash, identity, merge_pair, pending, recipe_hash
+from matrix import environments, expand, file_hash, identity, merge_pair, pending, recipe_hash
 
 ROOT = Path(__file__).resolve().parent.parent
 REPO = 'compiler-team-ru/pyasc-images'
@@ -58,11 +58,28 @@ def output(key, value):
         stream.write(key + '=' + str(value) + '\n')
 
 
+def environment_recipe():
+    return identity({name: file_hash(ROOT / name)
+                     for name in ('Dockerfile', 'entrypoint.sh', 'requirements.lock')})
+
+
+def prepare_environments():
+    cells = environments(json.loads((ROOT / 'inputs.lock.json').read_text()), environment_recipe())
+    selected = set(os.environ['INPUT_CELLS'].split(','))
+    assert selected and selected <= {c['key'] for c in cells}, 'Select explicit environment cells'
+    output('matrix', json.dumps({'include': [{'key': c['key'], 'runner': c['runner']} for c in cells if c['key'] in selected]}))
+
+
+def build_environment():
+    cells = environments(json.loads((ROOT / 'inputs.lock.json').read_text()), environment_recipe())
+    cell = next(c for c in cells if c['key'] == os.environ['CELL_KEY'])
+    print(ensure_environment(cell))
+
+
 def plan():
     lock = json.loads((ROOT / 'inputs.lock.json').read_text())
     recipe = recipe_hash(ROOT)
-    env_recipe = identity({name: file_hash(ROOT / name)
-                           for name in ('Dockerfile', 'entrypoint.sh', 'requirements.lock')})
+    env_recipe = environment_recipe()
     image_releases = {r['tag_name']: r for r in pages(f'repos/{REPO}/releases') if not r['draft']}
     releases = [r for r in pages(f'repos/{WHEELS_REPO}/releases')
                 if not r['draft'] and r['tag_name'].startswith('wheel-')]
@@ -160,6 +177,28 @@ def verify_image(image, mode, directory):
     return json.loads((directory / ('result-' + mode + '.json')).read_text())
 
 
+def ensure_environment(cell):
+    env = cell['environment']
+    env_digest = inspect_image(cell['environment_image'])
+    if not env_digest:
+        args = {'UBUNTU_IMAGE': env['ubuntu_image'],
+                'PYTHON_VERSION': env['python_source']['version'],
+                'PYTHON_URL': env['python_source']['url'],
+                'PYTHON_SHA256': env['python_source']['sha256'],
+                'CANN_URL': env['cann_installer']['url'], 'CANN_SHA256': env['cann_installer']['sha256'],
+                'CANN_INSTALL_ARGS': ' '.join(env['cann_installer']['install_args'])}
+        command = ['docker', 'buildx', 'build', '--target', 'environment', '--push', '-t', cell['environment_image'],
+                   '--platform', 'linux/' + env['arch'],
+                   '--cache-from', 'type=registry,ref=ghcr.io/compiler-team-ru/pyasc-env:cache-' + cell['key'],
+                   '--cache-to', 'type=registry,ref=ghcr.io/compiler-team-ru/pyasc-env:cache-' + cell['key'] + ',mode=max']
+        for key, value in args.items():
+            command += ['--build-arg', key + '=' + value]
+        run(*command, '.')
+        env_digest = inspect_image(cell['environment_image'])
+    assert env_digest
+    return env_digest
+
+
 def build_cell():
     plan_data = json.loads(Path('work/plan.json').read_text())
     cell = next(c for c in plan_data['pending'] if c['key'] == os.environ['CELL_KEY'])
@@ -169,23 +208,7 @@ def build_cell():
         result['upstream_kernel'] = prepare(cell)
         env = cell['environment']
         phase = 'environment'
-        env_digest = inspect_image(cell['environment_image'])
-        if not env_digest:
-            args = {'UBUNTU_IMAGE': env['ubuntu_image'],
-                    'PYTHON_VERSION': env['python_source']['version'],
-                    'PYTHON_URL': env['python_source']['url'],
-                    'PYTHON_SHA256': env['python_source']['sha256'],
-                    'CANN_URL': env['cann_installer']['url'], 'CANN_SHA256': env['cann_installer']['sha256'],
-                    'CANN_INSTALL_ARGS': ' '.join(env['cann_installer']['install_args'])}
-            command = ['docker', 'buildx', 'build', '--target', 'environment', '--push', '-t', cell['environment_image'],
-                       '--platform', 'linux/' + env['arch'],
-                       '--cache-from', 'type=registry,ref=ghcr.io/compiler-team-ru/pyasc-env:cache-' + cell['key'],
-                       '--cache-to', 'type=registry,ref=ghcr.io/compiler-team-ru/pyasc-env:cache-' + cell['key'] + ',mode=max']
-            for key, value in args.items():
-                command += ['--build-arg', key + '=' + value]
-            run(*command, '.')
-            env_digest = inspect_image(cell['environment_image'])
-        assert env_digest
+        env_digest = ensure_environment(cell)
         result['environment_digest'] = env_digest
         env_image = cell['environment_image'].split(':')[0] + '@' + env_digest
         existing = inspect_image(cell['tag'])
@@ -282,4 +305,5 @@ def finish():
 
 
 if __name__ == '__main__':
-    {'plan': plan, 'build': build_cell, 'finish': finish}[sys.argv[1]]()
+    {'plan': plan, 'build': build_cell, 'finish': finish,
+     'plan-environments': prepare_environments, 'environment': build_environment}[sys.argv[1]]()
