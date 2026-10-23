@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "bootstrap_source": "ea2dbf9d62b5d04b0598d486fa3057ec70d85234",
+  "simulator": "Ascend950PR_9599",
+  "python": {
+    "3.9": {
+      "version": "3.9.25",
+      "url": "https://www.python.org/ftp/python/3.9.25/Python-3.9.25.tar.xz",
+      "sha256": "00e07d7c0f2f0cc002432d1ee84d2a40dae404a99303e3f97701c10966c91834"
+    },
+    "3.10": {
+      "version": "3.10.22",
+      "url": "https://www.python.org/ftp/python/3.10.22/Python-3.10.22.tar.xz",
+      "sha256": "c61fe9b1a1a7ec2a0b0388e664187c378a5325a89e3606d220abf5bdfccb2543"
+    },
+    "3.11": {
+      "version": "3.11.17",
+      "url": "https://www.python.org/ftp/python/3.11.17/Python-3.11.17.tar.xz",
+      "sha256": "bfb74ad39efae27cda510f134ab408e00f9992c56851cfc0b1cdb5646da11599"
+    },
+    "3.12": {
+      "version": "3.12.15",
+      "url": "https://www.python.org/ftp/python/3.12.15/Python-3.12.15.tar.xz",
+      "sha256": "c2c4321961fab0fb999d66e0cecf521c2ab3994c7992873ea99e306c1094fd5a"
+    }
+  },
+  "ubuntu": {
+    "22.04": {
+      "amd64": "ubuntu@sha256:98510ac07bb4545e389be502a8918b385c018bfe4ceeb5ac7e0375c782268b04",
+      "arm64": "ubuntu@sha256:88881eb36da489f9ff8746ece8048ca16cc94f80e8cd3ae7e8335d8822631591"
+    },
+    "24.04": {
+      "amd64": "ubuntu@sha256:a2d43bffc46670d7108bb3c0468c67c5557c4c92e83e1e34cbff1322ad1b94dc",
+      "arm64": "ubuntu@sha256:18b33ff3829707f31ada654a963b9ee35f2e6f0241b964bd17a22a9b330cb63d"
+    }
+  },
+  "cann": {}
+}

@@ -1,0 +1,7 @@
+*
+!Dockerfile
+!requirements.lock
+!entrypoint.sh
+!cell.json
+!wheel/
+!wheel/*

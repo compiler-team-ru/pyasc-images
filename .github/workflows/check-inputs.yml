@@ -1,0 +1,39 @@
+name: Check CANN installer inputs
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  checksum:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ['9.0.0', '9.2.0']
+        arch: [x86_64, aarch64]
+    steps:
+      - name: Download and hash official installer
+        env:
+          CANN_VERSION: ${{ matrix.version }}
+          CANN_ARCH: ${{ matrix.arch }}
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,urllib.request
+          from pathlib import Path
+          version,arch=os.environ['CANN_VERSION'],os.environ['CANN_ARCH']
+          url=f'https://ascend-repo.obs.cn-east-2.myhuaweicloud.com/CANN/CANN%20{version}/Ascend-cann-toolkit_{version}_linux-{arch}.run'
+          digest=hashlib.sha256()
+          size=0
+          with urllib.request.urlopen(urllib.request.Request(url,headers={'Referer':'https://www.hiascend.com/'}),timeout=120) as response:
+              for chunk in iter(lambda:response.read(1024*1024),b''):
+                  digest.update(chunk);size+=len(chunk)
+          result={'version':version,'arch':arch,'url':url,'sha256':digest.hexdigest(),'bytes':size}
+          Path('input.json').write_text(json.dumps(result,indent=2)+'\n')
+          print(json.dumps(result))
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cann-${{ matrix.version }}-${{ matrix.arch }}
+          path: input.json
+          retention-days: 30

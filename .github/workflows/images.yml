@@ -1,0 +1,127 @@
+name: Simulator images
+on:
+  schedule:
+    - cron: '37 * * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact complete wheel version; empty processes pending publications'
+        default: ''
+        type: string
+      cells:
+        description: 'Comma-separated cell keys; empty selects the full matrix'
+        default: ''
+        type: string
+  push:
+    branches: [main]
+    paths: ['Dockerfile', 'entrypoint.sh', 'inputs.lock.json', 'requirements.lock', 'ci/**', '.github/workflows/images.yml']
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: simulator-images
+  cancel-in-progress: false
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s ci -p 'test_*.py'
+  plan:
+    needs: tests
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CELLS: ${{ inputs.cells }}
+        run: python3 ci/pipeline.py plan
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: plan
+          path: work/plan.json
+          retention-days: 30
+  image:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: plan
+          path: work
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Release disk space for toolkit installation
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+      - name: Assemble, qualify and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CELL_KEY: ${{ matrix.key }}
+        run: |
+          set -o pipefail
+          python3 ci/pipeline.py build 2>&1 | tee work/build.log
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: result-${{ matrix.key }}
+          path: |
+            work/result.json
+            work/build.log
+            work/*/result-*.json
+          if-no-files-found: warn
+          retention-days: 30
+  report:
+    needs: [plan, image]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.count != '0'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: plan
+          path: work
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: result-*
+          path: results
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish manifests and durable matrix report
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ci/pipeline.py finish
