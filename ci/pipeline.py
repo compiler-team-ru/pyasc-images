@@ -164,6 +164,18 @@ def inspect_image(image):
     return json.loads(result.stdout)['digest']
 
 
+def verify_public_digest(image):
+    repository, digest = image.removeprefix('ghcr.io/').split('@')
+    with urllib.request.urlopen('https://ghcr.io/token?service=ghcr.io&scope=repository:' + repository + ':pull', timeout=60) as response:
+        token = json.load(response)['token']
+    request = urllib.request.Request('https://ghcr.io/v2/' + repository + '/manifests/' + digest,
+                                     headers={'Authorization': 'Bearer ' + token,
+                                              'Accept': 'application/vnd.oci.image.manifest.v1+json, application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.v2+json'})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        assert 'sha256:' + hashlib.sha256(response.read()).hexdigest() == digest
+    return {'anonymous_registry_access': True, 'digest': digest}
+
+
 def verify_image(image, mode, directory):
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o777)
@@ -242,6 +254,7 @@ def build_cell():
         assert existing
         result['digest'] = existing
         result['image'] = cell['tag'].split(':')[0] + '@' + existing
+        result['public_registry_check'] = verify_public_digest(result['image'])
         run('docker', 'pull', result['image'])
         result['public_identity_check'] = verify_image(result['image'], 'identity', Path('work/public'))
         result['status'] = 'pass'
