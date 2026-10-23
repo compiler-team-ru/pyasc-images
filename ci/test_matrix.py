@@ -66,6 +66,23 @@ class MatrixTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_publication(publication)
 
+    def test_incompatible_wheels_remain_in_complete_report(self):
+        lock, publication = fixture()
+        publication['schema_version'] = 2
+        publication['incompatible_targets'] = {}
+        for arch in ('x86_64', 'aarch64'):
+            target = 'cp39-' + arch
+            del publication['wheels'][target]
+            del publication['targets'][target]
+            publication['incompatible_targets'][target] = {
+                'source_sha': publication['source_sha'], 'status': 'incompatible',
+                'reason': 'dataclass slots requires Python 3.10', 'job_url': 'https://github.com/job', 'log_sha256': 'a' * 64}
+        cells = expand(lock, publication, 'r' * 64, 'e' * 64)
+        self.assertEqual(len(cells), 32)
+        self.assertEqual(len(pending(cells, [])), 24)
+        self.assertEqual(sum('incompatibility' in c for c in cells), 8)
+        self.assertEqual(pending(cells, [{**c, 'status': 'pass'} for c in pending(cells, [])]), [])
+
     def test_matrix_subset(self):
         cells = self.cells()
         self.assertEqual(len(pending(cells, [], cells[0]['key'])), 1)

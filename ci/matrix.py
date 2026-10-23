@@ -23,10 +23,15 @@ def recipe_hash(root):
 
 
 def validate_publication(publication):
-    assert publication['schema_version'] == 1 and publication['status'] == 'complete'
+    assert publication['schema_version'] in (1, 2) and publication['status'] == 'complete'
     assert publication['source_repository'] == 'compiler-team-ru/pyasc'
     expected = {f'cp{p.replace(".", "")}-{a}' for p in ('3.9', '3.10', '3.11', '3.12') for a in ARCH.values()}
-    assert set(publication['wheels']) == set(publication['targets']) == expected
+    excluded = publication.get('incompatible_targets', {})
+    assert set(publication['wheels']) == set(publication['targets'])
+    assert not set(publication['wheels']) & set(excluded)
+    assert set(publication['wheels']) | set(excluded) == expected
+    assert all(e['status'] == 'incompatible' and e['source_sha'] == publication['source_sha']
+               and e['reason'] and e['job_url'] and e['log_sha256'] for e in excluded.values())
     assert len({w['llvm']['revision'] for w in publication['wheels'].values()}) == 1, 'Mixed LLVM revisions'
     for target, wheel in publication['wheels'].items():
         assert wheel['sha256'] == publication['targets'][target]
@@ -66,8 +71,10 @@ def expand(lock, publication, recipe, environment_recipe):
         cell = {'key': f'u{ubuntu}-c{cann}-p{python}-{arch}', 'environment': environment,
                 'environment_id': env_id, 'environment_image': f'{REGISTRY}/pyasc-env:{env_id}',
                 'version': publication['version'], 'source_sha': publication['source_sha'],
-                'wheel': publication['wheels'][target], 'recipe': recipe,
+                'wheel': publication['wheels'].get(target), 'recipe': recipe,
                 'runner': 'ubuntu-24.04-arm' if arch == 'arm64' else 'ubuntu-24.04'}
+        if target in publication.get('incompatible_targets', {}):
+            cell['incompatibility'] = publication['incompatible_targets'][target]
         cell['id'] = identity(cell)
         cell['tag'] = f'{REGISTRY}/pyasc-sim:v{cell["version"]}-cann{cann}-u{ubuntu}-py{python}-s{cell["source_sha"][:12]}-r{recipe[:16]}-{arch}'
         cells.append(cell)
@@ -78,7 +85,7 @@ def pending(cells, previous, selected=''):
     keys = set(filter(None, selected.split(',')))
     assert not keys or keys <= {c['key'] for c in cells}, 'Unknown matrix cell'
     passed = {r['id'] for r in previous if r['status'] == 'pass'}
-    return [c for c in cells if c['id'] not in passed and (not keys or c['key'] in keys)]
+    return [c for c in cells if 'incompatibility' not in c and c['id'] not in passed and (not keys or c['key'] in keys)]
 
 
 def merge_pair(left, right):

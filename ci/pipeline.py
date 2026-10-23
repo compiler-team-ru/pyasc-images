@@ -278,6 +278,9 @@ def finish():
         results[result['id']] = result
     cells = []
     for cell in plan_data['cells']:
+        if 'incompatibility' in cell:
+            cells.append({**cell, 'status': 'incompatible', 'reason': cell['incompatibility']['reason']})
+            continue
         attempted = cell['id'] in {c['id'] for c in plan_data['pending']}
         cells.append(results.get(cell['id'], {**cell, 'status': 'failed' if attempted else 'not-run',
                                              'reason': 'No job result; inspect Actions logs' if attempted else 'Not selected in this run'}))

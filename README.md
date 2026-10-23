@@ -86,3 +86,9 @@ To prepare reusable environments before a wheel publication, dispatch
 `environments.yml` with explicit cell keys. This builds no compiler or simulator
 wheel; final images still undergo the full qualification pipeline. CANN's
 version-specific installer arguments are recorded alongside each installer hash.
+
+Complete wheel manifests can include explicit upstream incompatibilities. These
+remain visible in all affected matrix cells and are not retried as image-build
+failures. In particular, the frozen source uses `dataclass(slots=True)` and cannot
+import on Python 3.9. The native wheel checks retain evidence for both architectures;
+no source compatibility patch or broken Python 3.9 wheel is substituted.
