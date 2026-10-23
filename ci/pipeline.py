@@ -166,7 +166,8 @@ def build_cell():
                     'PYTHON_VERSION': env['python_source']['version'],
                     'PYTHON_URL': env['python_source']['url'],
                     'PYTHON_SHA256': env['python_source']['sha256'],
-                    'CANN_URL': env['cann_installer']['url'], 'CANN_SHA256': env['cann_installer']['sha256']}
+                    'CANN_URL': env['cann_installer']['url'], 'CANN_SHA256': env['cann_installer']['sha256'],
+                    'CANN_INSTALL_ARGS': ' '.join(env['cann_installer']['install_args'])}
             command = ['docker', 'buildx', 'build', '--target', 'environment', '--push', '-t', cell['environment_image'],
                        '--platform', 'linux/' + env['arch'],
                        '--cache-from', 'type=registry,ref=ghcr.io/compiler-team-ru/pyasc-env:cache-' + cell['key'],
@@ -191,8 +192,11 @@ def build_cell():
                 '--build-arg', 'ENVIRONMENT_IMAGE=' + env_image,
                 '--build-arg', 'SOURCE_SHA=' + cell['source_sha'],
                 '--build-arg', 'WHEEL_VERSION=' + cell['version'],
-                '--build-arg', 'RECIPE_SHA=' + cell['recipe'], '.')
+                '--build-arg', 'RECIPE_SHA=' + cell['recipe'],
+                '--build-arg', 'ENVIRONMENT_DIGEST=' + env_digest, '.')
         phase = 'qualification'
+        labels = json.loads(subprocess.check_output(['docker', 'image', 'inspect', image, '--format', '{{json .Config.Labels}}'], text=True))
+        assert labels['io.pyasc.environment'] == env_digest, 'Environment digest differs'
         run('docker', 'run', '--rm', '--entrypoint', 'cat', image, '/opt/pyasc-image.json', stdout=open('work/installed-cell.json', 'w'))
         assert json.loads(Path('work/installed-cell.json').read_text()) == cell, 'Image identity differs'
         result['checks'] = [verify_image(image, mode, Path('work') / mode) for mode in ('identity', 'compile', 'model')]
@@ -210,6 +214,9 @@ def build_cell():
     except Exception as error:
         result['phase'] = phase
         result['reason'] = str(error)
+        log = Path('work/build.log')
+        if log.exists():
+            result['diagnostic_tail'] = log.read_text(errors='replace')[-5000:]
         raise
     finally:
         Path('work/result.json').write_text(json.dumps(result, indent=2) + '\n')

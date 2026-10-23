@@ -10,7 +10,7 @@ def fixture():
             'python': {p: {'version': p + '.1'} for p in ('3.9', '3.10', '3.11', '3.12')},
             'simulator': 'Ascend950PR_9599'}
     wheels = {f'cp{p.replace(".", "")}-{a}':
-              {'filename': 'pyasc_dev-1.1.1.dev1-' + p + a + '.whl', 'sha256': p + a,
+              {'filename': 'pyasc_dev-1.1.1.dev1-cp' + p.replace('.', '') + '-cp' + p.replace('.', '') + '-manylinux_2_28_' + a + '.whl', 'sha256': p + a,
                'url': 'https://files.pythonhosted.org/a.whl', 'llvm': {'revision': 'a' * 40}}
               for p in lock['python'] for a in arches.values()}
     publication = {'schema_version': 1, 'status': 'complete', 'source_repository': 'compiler-team-ru/pyasc',
@@ -28,7 +28,7 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(len(cells), 32)
         self.assertEqual(len({c['id'] for c in cells}), 32)
         for cell in cells:
-            self.assertIn(cell['environment']['python'], cell['wheel']['filename'])
+            self.assertIn('-cp' + cell['environment']['python'].replace('.', '') + '-', cell['wheel']['filename'])
 
     def test_unchanged_skips_and_failures_retry(self):
         cells = self.cells()
@@ -72,3 +72,22 @@ class MatrixTests(unittest.TestCase):
         pair[1]['status'] = 'failed'
         with self.assertRaises(AssertionError):
             merge_pair(*pair)
+
+
+class DownloadTests(unittest.TestCase):
+    def test_download_rejects_changed_bytes(self):
+        import io
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from pipeline import download
+        with tempfile.TemporaryDirectory() as root:
+            with patch('pipeline.urllib.request.urlopen', return_value=io.BytesIO(b'changed')):
+                with self.assertRaises(AssertionError):
+                    download('https://files.pythonhosted.org/a.whl', Path(root) / 'a.whl', 'a' * 64)
+
+    def test_foreign_python_abi_rejected(self):
+        _, publication = fixture()
+        publication['wheels']['cp39-x86_64']['filename'] = publication['wheels']['cp310-x86_64']['filename']
+        with self.assertRaises(AssertionError):
+            validate_publication(publication)

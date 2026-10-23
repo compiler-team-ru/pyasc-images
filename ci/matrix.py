@@ -17,7 +17,7 @@ def file_hash(path):
 
 
 def recipe_hash(root):
-    paths = [root / 'Dockerfile', root / 'entrypoint.sh', root / 'requirements.lock',
+    paths = [root / 'Dockerfile', root / 'entrypoint.sh', root / 'requirements.lock', root / 'inputs.lock.json',
              *sorted((root / 'ci').glob('*.py')), *sorted((root / '.github/workflows').glob('*.yml'))]
     return identity({str(p.relative_to(root)): file_hash(p) for p in paths if not p.name.startswith('test_')})
 
@@ -29,13 +29,18 @@ def validate_publication(publication):
     assert set(publication['wheels']) == set(publication['targets']) == expected
     for target, wheel in publication['wheels'].items():
         assert wheel['sha256'] == publication['targets'][target]
+        assert Path(wheel['filename']).name == wheel['filename']
         assert wheel['filename'].startswith('pyasc_dev-' + publication['version'] + '-')
+        python_tag, arch = target.split('-', 1)
+        assert f'-{python_tag}-{python_tag}-' in wheel['filename']
+        assert wheel['filename'].endswith('_' + arch + '.whl')
         assert wheel['url'].startswith('https://files.pythonhosted.org/')
         assert wheel['llvm']['revision']
 
 
 def expand(lock, publication, recipe, environment_recipe):
     validate_publication(publication)
+    assert all(lock[k] for k in ('ubuntu', 'cann', 'python')), 'Incomplete input lock'
     cells = []
     for ubuntu, cann, python, arch in itertools.product(lock['ubuntu'], lock['cann'], lock['python'], ARCH):
         target = f'cp{python.replace(".", "")}-{ARCH[arch]}'
@@ -50,7 +55,7 @@ def expand(lock, publication, recipe, environment_recipe):
                 'wheel': publication['wheels'][target], 'recipe': recipe,
                 'runner': 'ubuntu-24.04-arm' if arch == 'arm64' else 'ubuntu-24.04'}
         cell['id'] = identity(cell)
-        cell['tag'] = f'{REGISTRY}/pyasc-sim:v{cell["version"]}-cann{cann}-u{ubuntu}-py{python}-r{recipe[:16]}-{arch}'
+        cell['tag'] = f'{REGISTRY}/pyasc-sim:v{cell["version"]}-cann{cann}-u{ubuntu}-py{python}-s{cell["source_sha"][:12]}-r{recipe[:16]}-{arch}'
         cells.append(cell)
     return cells
 
