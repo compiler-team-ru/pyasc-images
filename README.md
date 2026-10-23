@@ -40,7 +40,9 @@ docker run --rm -it \
 
 The entrypoint initializes CANN and the configured simulator. Python is under
 `/opt/python`, with matching headers and a C++ compiler available for JIT.
-No host PyAsc checkout is needed.
+No host PyAsc checkout is needed. The entrypoint preserves an explicitly supplied
+`PYTHONPATH` but excludes CANN's optional profiler Python distributions from the
+managed Python environment. Compiler and simulator paths remain initialized.
 
 To change only PyAsc, keep the CANN, Ubuntu, Python and architecture fields
 fixed and select another wheel publication. To compare CANN versions, keep
