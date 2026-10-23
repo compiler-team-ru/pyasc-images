@@ -81,3 +81,8 @@ simulator smoke test, not broad numerical qualification or hardware evidence.
 
 Existing skill-stack experiment pins and consumer workflows are not updated
 by this repository.
+
+To prepare reusable environments before a wheel publication, dispatch
+`environments.yml` with explicit cell keys. This builds no compiler or simulator
+wheel; final images still undergo the full qualification pipeline. CANN's
+version-specific installer arguments are recorded alongside each installer hash.

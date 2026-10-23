@@ -82,7 +82,8 @@ def plan():
     env_recipe = environment_recipe()
     image_releases = {r['tag_name']: r for r in pages(f'repos/{REPO}/releases') if not r['draft']}
     releases = [r for r in pages(f'repos/{WHEELS_REPO}/releases')
-                if not r['draft'] and r['tag_name'].startswith('wheel-')]
+                if not r['draft'] and r['tag_name'].startswith('wheel-')
+                and any(a['name'] == 'wheel-manifest.json' for a in r['assets'])]
     version = os.environ.get('INPUT_VERSION', '')
     selected = os.environ.get('INPUT_CELLS', '')
     candidates = []
@@ -90,7 +91,8 @@ def plan():
         if version and release['tag_name'] != 'wheel-' + version:
             continue
         publication = asset_json(release, 'wheel-manifest.json')
-        candidates.append((release, publication))
+        if publication.get('status') == 'complete':
+            candidates.append((release, publication))
     if version:
         assert candidates, 'Requested wheel publication does not exist'
     else:

@@ -1,4 +1,5 @@
 """Exercise the unchanged upstream add kernel; this is not a benchmark."""
+import base64
 import hashlib
 import importlib.metadata
 import json
@@ -18,6 +19,23 @@ assert os_release['VERSION_ID'].strip('"') == environment['ubuntu']
 assert importlib.metadata.version('pyasc-dev') == cell['version']
 assert not Path('/opt/llvm').exists() and not Path('/opt/pyasc').exists()
 subprocess.run([sys.executable, '-m', 'pip', 'check'], check=True)
+dependencies = {}
+for line in Path('/opt/requirements.lock').read_text().splitlines():
+    if '==' in line and not line.startswith((' ', '#')):
+        name, version = line.split()[0].split('==')
+        actual = importlib.metadata.version(name)
+        assert actual == version, f'Dependency changed: {name} {actual} != {version}'
+        dependencies[name] = actual
+distribution = importlib.metadata.distribution('pyasc-dev')
+native_hashes = {}
+for file in distribution.files:
+    if str(file).endswith('.so'):
+        digest = hashlib.sha256(file.locate().read_bytes()).digest()
+        assert file.hash and file.hash.mode == 'sha256'
+        assert base64.urlsafe_b64encode(digest).decode().rstrip('=') == file.hash.value
+        native_hashes[str(file)] = digest.hex()
+assert native_hashes, 'Missing native extension'
+
 # Check the installed toolkit's own version record, not just the image label.
 home = Path(os.environ['ASCEND_HOME_PATH']).resolve()
 records = list(home.glob('**/ascend_toolkit_install.info')) + list(home.glob('version.cfg')) + list(home.glob('version.info'))
@@ -34,8 +52,11 @@ from asc.runtime import config
 assert Path(asc.__file__).resolve().is_relative_to(Path('/opt/python'))
 assert callable(asctile.jit)
 result = {'status': 'pass', 'mode': mode, 'cell_id': cell['id'],
-          'python': platform.python_version(), 'cann_version_records': version_lines}
+          'python': platform.python_version(), 'cann_version_records': version_lines,
+          'dependencies': dependencies, 'native_sha256': native_hashes}
 if mode != 'identity':
+    simulator = home / 'tools/simulator' / environment['simulator'] / 'lib'
+    assert simulator.is_dir(), f'Simulator target unavailable: {environment["simulator"]} in CANN {environment["cann"]}'
     sys.path.insert(0, '/verification')
     from upstream_kernel import add
     import numpy as np

@@ -37,6 +37,17 @@ class MatrixTests(unittest.TestCase):
         previous[0]['status'] = 'failed'
         self.assertEqual([c['id'] for c in pending(cells, previous)], [cells[0]['id']])
 
+    def test_partial_retry_preserves_successful_cells(self):
+        cells = self.cells()
+        previous = [{**c, 'status': 'pass'} for c in cells[:10]]
+        self.assertEqual(pending(cells, previous), cells[10:])
+
+    def test_mixed_llvm_rejected(self):
+        _, publication = fixture()
+        publication['wheels']['cp39-x86_64']['llvm']['revision'] = 'b' * 40
+        with self.assertRaises(AssertionError):
+            validate_publication(publication)
+
     def test_wheel_change_does_not_rebuild_environment(self):
         lock, publication = fixture()
         old = expand(lock, publication, 'r' * 64, 'e' * 64)

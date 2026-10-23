@@ -27,6 +27,7 @@ def validate_publication(publication):
     assert publication['source_repository'] == 'compiler-team-ru/pyasc'
     expected = {f'cp{p.replace(".", "")}-{a}' for p in ('3.9', '3.10', '3.11', '3.12') for a in ARCH.values()}
     assert set(publication['wheels']) == set(publication['targets']) == expected
+    assert len({w['llvm']['revision'] for w in publication['wheels'].values()}) == 1, 'Mixed LLVM revisions'
     for target, wheel in publication['wheels'].items():
         assert wheel['sha256'] == publication['targets'][target]
         assert Path(wheel['filename']).name == wheel['filename']
