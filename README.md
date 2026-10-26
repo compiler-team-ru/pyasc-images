@@ -110,3 +110,42 @@ remain visible in all affected matrix cells and are not retried as image-build
 failures. In particular, the frozen source uses `dataclass(slots=True)` and cannot
 import on Python 3.9. The native wheel checks retain evidence for both architectures;
 no source compatibility patch or broken Python 3.9 wheel is substituted.
+
+## Development overlays
+
+Development images are published separately as `ghcr.io/compiler-team-ru/pyasc-sim-dev`.
+They inherit an exact verified simulator image digest and add CPU Torch 2.7.1+cpu,
+pytest 8.4.2, and checksum-pinned dependencies. They do not rebuild the compiler,
+replace base dependencies, or include upstream source. Minimal images stay minimal.
+
+The `dev-images.yaml` workflow discovers completed base matrices hourly. Manual
+inputs select an exact base matrix release tag (`report`) and optional cell keys
+(`cells`). Each `dev-matrix.json` records the base digest, overlay digest, source,
+dependency evidence, and full AscTile suite results. `published` means the development
+environment is qualified; inspect `suite_status` before claiming the suite passes.
+Python 3.9 inherits the base publication's incompatibility.
+
+Use the source commit recorded in the report and mount its checkout:
+
+```bash
+docker run --rm --ulimit nofile=65536:65536 \
+  -v "$PWD:/source:ro" -w /source \
+  -e PYTHONDONTWRITEBYTECODE=1 -e PYASC_CACHE_DIR=/tmp/pyasc-cache \
+  ghcr.io/compiler-team-ru/pyasc-sim-dev@sha256:<overlay-digest> \
+  python3 -m pytest -c /source/pyproject.toml \
+    experimental/asctile/python/test --backend Model --platform Ascend950PR_9599
+```
+
+For one test, replace the suite path with its module or exact pytest node ID.
+To vary only CANN, select two published cells in the same dev report with identical
+Ubuntu, Python, architecture, source, wheel hash and overlay recipe, differing only
+in `base.environment.cann`. Use their recorded overlay digests.
+
+Qualification collects every module and executes all parameterizations with upstream
+assertions and markers. Every module runs in a separate container with fresh caches;
+its logs, JUnit XML and per-test outcomes are retained as release assets. Completed
+module checkpoints are reused only for the same overlay identity. Dependency,
+collection, environment, incomplete and undiagnosed failures block publication.
+Exact reviewed compiler/numerical/platform diagnoses can permit publication with
+reported test failures. No new skips, expected failures or reduced parameter sets
+are introduced. Upstream skips, xfails and unexpected passes remain visible.
