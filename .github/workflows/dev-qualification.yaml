@@ -66,7 +66,6 @@ jobs:
     timeout-minutes: 360
     permissions:
       contents: write
-      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -75,12 +74,6 @@ jobs:
         with:
           name: plan
           path: work
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
       - name: Release disk space for toolkit installation
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
       - name: Run full suite against published image digest
@@ -112,7 +105,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -126,12 +118,6 @@ jobs:
         with:
           pattern: result-*
           path: results
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
-      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
       - name: Publish full-suite qualification report
         env:
           GH_TOKEN: ${{ github.token }}
