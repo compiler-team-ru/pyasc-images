@@ -120,10 +120,20 @@ replace base dependencies, or include upstream source. Minimal images stay minim
 
 The `dev-images.yaml` workflow discovers completed base matrices hourly. Manual
 inputs select an exact base matrix release tag (`report`) and optional cell keys
-(`cells`). Each `dev-matrix.json` records the base digest, overlay digest, source,
-dependency evidence, and full AscTile suite results. `published` means the development
-environment is qualified; inspect `suite_status` before claiming the suite passes.
-Python 3.9 inherits the base publication's incompatibility.
+(`cells`). Publication requires dependency consistency, preserved base packages,
+native imports, CPU Torch operations, collection of every AscTile test, and the
+baseline compile/simulator check. Published digests are pulled and checked again.
+Each `dev-matrix.json` records the base and overlay digests and environment evidence.
+`published` means **environment-qualified**, not that the full suite passed.
+
+Full execution continues independently in `dev-qualification.yaml`, triggered after
+publication and hourly, with the same manual report/cell selection. Its durable
+`qualification-<recipe>.json` assets record the current full-suite status, counts,
+individual failures and evidence links. The environment report's `suite` field
+records the state **at publication**; consult the separate qualification report for
+subsequent results. Missing or interrupted module checkpoints are retried; completed
+ones are reused for identical image and qualification inputs. Python 3.9 retains
+the base publication's incompatibility.
 
 Use the source commit recorded in the report and mount its checkout:
 
@@ -144,8 +154,9 @@ in `base.environment.cann`. Use their recorded overlay digests.
 Qualification collects every module and executes all parameterizations with upstream
 assertions and markers. Every module runs in a separate container with fresh caches;
 its logs, JUnit XML and per-test outcomes are retained as release assets. Completed
-module checkpoints are reused only for the same overlay identity. Dependency,
-collection, environment, incomplete and undiagnosed failures block publication.
-Exact reviewed compiler/numerical/platform diagnoses can permit publication with
-reported test failures. No new skips, expected failures or reduced parameter sets
+module checkpoints are reused only for the same overlay identity. Dependency, collection, environment and baseline failures block publication.
+Full-suite failures or interruptions remain explicitly non-green in the separate
+qualification report and do not overwrite or withdraw environment-qualified images.
+Exact reviewed diagnoses distinguish compiler, numerical and platform failures;
+unreviewed failures remain unclassified. No new skips, expected failures or reduced parameter sets
 are introduced. Upstream skips, xfails and unexpected passes remain visible.

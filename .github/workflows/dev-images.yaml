@@ -62,7 +62,7 @@ jobs:
       max-parallel: 8
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 360
+    timeout-minutes: 45
     permissions:
       contents: write
       packages: write
@@ -82,7 +82,7 @@ jobs:
           password: ${{ github.token }}
       - name: Release disk space for toolkit installation
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
-      - name: Assemble, qualify and publish
+      - name: Assemble, check environment and publish
         env:
           GH_TOKEN: ${{ github.token }}
           CELL_KEY: ${{ matrix.key }}

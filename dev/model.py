@@ -10,9 +10,14 @@ def identity(value):
 
 
 def recipe(root):
-    paths = [p for p in sorted((root / 'dev').glob('*')) if p.is_file() and not p.name.startswith('test_') and p.name != 'diagnoses.json']
-    paths += [root / '.github/workflows/dev-images.yaml']
-    return identity({str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths})
+    # Publication policy and test scheduling do not change installed image contents.
+    return identity({name: hashlib.sha256((root / 'dev' / name).read_bytes()).hexdigest()
+                     for name in ('Dockerfile', 'requirements.lock', 'torch.lock.json')})
+
+
+def qualification_recipe(root):
+    names = ('check.py', 'evidence.py', 'pipeline.py', 'model.py')
+    return identity({name: hashlib.sha256((root / 'dev' / name).read_bytes()).hexdigest() for name in names})
 
 
 def expand(base, recipe_hash):

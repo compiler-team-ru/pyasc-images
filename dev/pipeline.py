@@ -12,11 +12,12 @@ import urllib.request
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'ci'))
 import pipeline as base
-from model import expand, identity, pair_tag, pending, recipe, summarize
+from model import expand, identity, pair_tag, pending, recipe, qualification_recipe, summarize
 
 REPO = base.REPO
 WORK = ROOT / 'work'
 SUITE = 'experimental/asctile/python/test'
+QUALIFY = os.environ.get('DEV_MODE') == 'qualify'
 
 
 def save(path, value):
@@ -54,11 +55,34 @@ def plan():
         tag = 'dev-' + r['tag_name'] + '-' + rh[:12]
         prior_release = release(tag)
         prior = base.asset_json(prior_release, 'dev-matrix.json') if prior_release and any(a['name'] == 'dev-matrix.json' for a in prior_release['assets']) else {}
-        todo = pending(cells, prior.get('cells', []), os.environ.get('INPUT_CELLS', ''))
+        if QUALIFY:
+            if not prior:
+                continue
+            published = {c['id']: c for c in prior['cells'] if c['status'] == 'published'}
+            qr = qualification_recipe(ROOT)
+            qname = 'qualification-' + qr[:16] + '.json'
+            qprior = base.asset_json(prior_release, qname) if any(a['name'] == qname for a in prior_release['assets']) else {}
+            complete = {c['id'] for c in qprior.get('cells', []) if c['status'] == 'complete'}
+            selected = set(filter(None, os.environ.get('INPUT_CELLS', '').split(',')))
+            assert not selected or selected <= {c['key'] for c in cells}
+            cells = [{**published.get(c['id'], c), 'qualification_recipe': qr} for c in cells]
+            todo = [c for c in cells if c['id'] in published and c['id'] not in complete
+                    and (not selected or c['key'] in selected)]
+            prior = qprior
+        else:
+            todo = pending(cells, prior.get('cells', []), os.environ.get('INPUT_CELLS', ''))
         chosen = {'cells': cells, 'pending': todo, 'previous': prior.get('cells', []), 'tag': tag,
-                  'base_report': r['tag_name'], 'base_report_sha256': identity(report), 'recipe': rh}
+                  'base_report': r['tag_name'], 'base_report_sha256': identity(report), 'recipe': rh,
+                  'mode': 'qualify' if QUALIFY else 'publish', 'qualification_recipe': qualification_recipe(ROOT)}
         if todo or not prior or any(m['status'] != 'pass' for m in prior.get('manifests', [])):
             break
+    if chosen is None and QUALIFY:
+        save(WORK / 'dev-plan.json', {'mode': 'qualify', 'pending': [], 'cells': []})
+        base.output('matrix', json.dumps({'include': []}))
+        base.output('count', 0)
+        base.output('report', 'false')
+        print('Waiting for an environment-qualified development publication')
+        return
     assert chosen, 'No complete base matrix publication matches selection'
     ensure_release(chosen['tag'])
     save(WORK / 'dev-plan.json', chosen)
@@ -147,15 +171,20 @@ def checkpoint_name(cell, module):
     return 'tests-' + cell['id'][:24] + '-' + identity(module)[:16] + '.tar.gz'
 
 
+def collect(image):
+    folder = WORK / 'collection'
+    rc = container(image, folder, pytest_command(['/source/' + SUITE], True), source=True)
+    assert rc == 0, 'Full-suite collection failed; see collection/output.log'
+    inventory = json.loads((folder / 'evidence.json').read_text())['inventory']
+    assert inventory and len(set(inventory)) == len(inventory), 'Empty or duplicate test inventory'
+    return inventory
+
+
 def suite(image, cell, tag):
     # Keep each cell below GitHub's 1000-assets-per-release limit.
-    tag = 'dev-tests-' + cell['id']
+    tag = 'dev-tests-' + cell['id'] + '-' + cell['qualification_recipe'][:12]
     ensure_release(tag)
-    collect = WORK / 'collection'
-    rc = container(image, collect, pytest_command(['/source/' + SUITE], True), source=True)
-    assert rc == 0, 'Full-suite collection failed; see collection/output.log'
-    inventory = json.loads((collect / 'evidence.json').read_text())['inventory']
-    assert inventory and len(set(inventory)) == len(inventory), 'Empty or duplicate test inventory'
+    inventory = collect(image)
     modules = {}
     for node in inventory:
         modules.setdefault(node.split('::')[0], []).append(node)
@@ -173,7 +202,7 @@ def suite(image, cell, tag):
                 for member in tar:
                     assert member.name in ('evidence.json', 'junit.xml', 'output.log', 'identity.json') and member.isfile()
                     (folder / member.name).write_bytes(tar.extractfile(member).read())
-            assert json.loads((folder / 'identity.json').read_text()) == {'cell_id': cell['id'], 'module': module}
+            assert json.loads((folder / 'identity.json').read_text()) == {'cell_id': cell['id'], 'module': module, 'qualification_recipe': cell['qualification_recipe']}
         else:
             path = module if module.startswith('/source/') else '/source/' + module
             rc = container(image, folder, pytest_command([path]), source=True, timeout=10800)
@@ -181,7 +210,7 @@ def suite(image, cell, tag):
             assert (folder / 'evidence.json').exists(), f'Missing evidence: {module}'
             evidence = json.loads((folder / 'evidence.json').read_text())
             summarize(evidence, nodes, diagnoses)  # Verify complete before retaining a reusable checkpoint.
-            save(folder / 'identity.json', {'cell_id': cell['id'], 'module': module})
+            save(folder / 'identity.json', {'cell_id': cell['id'], 'module': module, 'qualification_recipe': cell['qualification_recipe']})
             with tarfile.open(archive, 'w:gz') as tar:
                 for filename in ('evidence.json', 'junit.xml', 'output.log', 'identity.json'):
                     tar.add(folder / filename, arcname=filename)
@@ -206,7 +235,11 @@ def build():
     result = {**cell, 'status': 'blocked', 'run_url': f'https://github.com/{REPO}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'}
     phase = 'assemble'
     try:
-        image, existing = assemble(cell)
+        if QUALIFY:
+            image, existing = cell['image'], cell['digest']
+            base.run('docker', 'pull', image)
+        else:
+            image, existing = assemble(cell)
         labels = json.loads(subprocess.check_output(['docker', 'image', 'inspect', image, '--format', '{{json .Config.Labels}}']))
         assert labels['io.pyasc.dev.id'] == cell['id'] and labels['io.pyasc.dev.base'] == cell['base']['image']
         phase = 'environment'
@@ -217,8 +250,15 @@ def build():
         result['baseline'] = [base.verify_image(image, mode, WORK / ('baseline-' + mode)) for mode in ('identity', 'compile', 'model')]
         phase = 'suite'
         result['source_archive_sha256'] = source_tree(cell['base']['source_sha'])
-        result['suite'] = suite(image, cell, data['tag'])
-        assert result['suite']['publishable'], 'Undiagnosed test failures block publication; inspect suite evidence'
+        if QUALIFY:
+            result['suite'] = suite(image, cell, data['tag'])
+            result['review_status'] = 'reviewed' if result['suite']['publishable'] else 'needs-review'
+            result['status'] = 'complete'
+            return
+        inventory = collect(image)
+        result['suite'] = {'suite_status': 'pending', 'collected': len(inventory), 'executed': 0,
+                           'inventory': inventory, 'status_at_publication': 'pending'}
+        result['qualification_release'] = f'https://github.com/{REPO}/releases/tag/{data["tag"]}'
         phase = 'publish'
         if not existing:
             base.run('docker', 'tag', image, cell['tag'])
@@ -234,7 +274,7 @@ def build():
         result['public_identity_check'] = base.verify_image(result['image'], 'identity', WORK / 'public-identity')
         result['status'] = 'published'
     except Exception as error:
-        result.update(phase=phase, reason=str(error))
+        result.update(status='incomplete' if QUALIFY else 'blocked', phase=phase, reason=str(error))
         if (WORK / 'suite.json').exists() and 'suite' not in result:
             result['partial_suite'] = json.loads((WORK / 'suite.json').read_text())
         raise
@@ -255,6 +295,16 @@ def finish():
             cells.append({**c, 'status': 'incompatible', 'reason': c['base']['reason']})
         else:
             cells.append(results.get(c['id'], {**c, 'status': 'blocked', 'reason': 'Not yet qualified'}))
+    if QUALIFY:
+        report = {k: data[k] for k in ('base_report', 'base_report_sha256', 'recipe', 'qualification_recipe')}
+        report.update(schema_version=1, cells=cells, scope='Full source-pinned AscTile suite; environment publication is independent.')
+        name = 'qualification-' + data['qualification_recipe'][:16] + '.json'
+        save(name, report)
+        base.run('gh', 'release', 'upload', data['tag'], name, '--clobber', '--repo', REPO)
+        if any(c['status'] != 'complete' or c['suite']['suite_status'] == 'failures'
+               for c in cells if c['status'] != 'incompatible'):
+            raise SystemExit('Full-suite qualification is incomplete or contains failures; environment publication is unaffected.')
+        return
     groups = {}
     for c in cells:
         groups.setdefault(c['key'].rsplit('-', 1)[0], []).append(c)
