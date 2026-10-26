@@ -138,9 +138,9 @@ def assemble(cell):
 
 
 def pytest_command(paths, collect=False):
-    return ['python3', '-m', 'pytest', '-p', 'evidence', '-c', '/source/pyproject.toml',
+    return ['python3', '-m', 'pytest', *paths, '-p', 'evidence', '-c', '/source/pyproject.toml',
             '--backend', 'Model', '--platform', 'Ascend950PR_9599', '-ra',
-            *(['--collect-only', '-q'] if collect else ['--junitxml=/results/junit.xml']), *paths]
+            *(['--collect-only', '-q'] if collect else ['--junitxml=/results/junit.xml'])]
 
 
 def checkpoint_name(cell, module):
@@ -148,6 +148,9 @@ def checkpoint_name(cell, module):
 
 
 def suite(image, cell, tag):
+    # Keep each cell below GitHub's 1000-assets-per-release limit.
+    tag = 'dev-tests-' + cell['id']
+    ensure_release(tag)
     collect = WORK / 'collection'
     rc = container(image, collect, pytest_command(['/source/' + SUITE], True), source=True)
     assert rc == 0, 'Full-suite collection failed; see collection/output.log'

@@ -10,7 +10,7 @@ def identity(value):
 
 
 def recipe(root):
-    paths = [p for p in sorted((root / 'dev').glob('*')) if p.is_file() and not p.name.startswith('test_')]
+    paths = [p for p in sorted((root / 'dev').glob('*')) if p.is_file() and not p.name.startswith('test_') and p.name != 'diagnoses.json']
     paths += [root / '.github/workflows/dev-images.yaml']
     return identity({str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths})
 
