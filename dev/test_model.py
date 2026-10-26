@@ -61,11 +61,21 @@ class Gates(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, patch('urllib.request.urlopen', return_value=io.BytesIO(b'changed')):
             with self.assertRaises(AssertionError): download('https://example.com/wheel',Path(d)/'wheel','0'*64)
 
-    def test_base_dependency_constraint(self):
-        docker=(Path(__file__).parent/'Dockerfile').read_text()
-        self.assertIn('pip freeze --all',docker)
-        self.assertIn('-c /tmp/base-constraints.txt',docker)
-        self.assertIn('--require-hashes',docker)
-        self.assertIn('pip check',docker)
+    def test_base_dependency_change_rejected(self):
+        check=(Path(__file__).parent/'check.py').read_text()
+        with patch('subprocess.run'), patch('pathlib.Path.read_text', return_value='numpy==1.26.4\n'), \
+                patch('importlib.metadata.version', return_value='2.0.0'):
+            with self.assertRaises(AssertionError):
+                exec(compile(check, 'dev/check.py', 'exec'), {})
+
+    def test_collection_error_blocks(self):
+        e=self.evidence()
+        e['events'].append({'nodeid':'broken.py','phase':'collection','outcome':'failed','detail':'ImportError'})
+        with self.assertRaises(AssertionError): summarize(e,e['inventory'])
+
+    def test_diagnosis_hash_mismatch_blocks(self):
+        e=self.evidence('different failure')
+        d={'nodeid':e['inventory'][0],'detail_sha256':'0'*64,'category':'compiler','reason':'Other diagnostic'}
+        self.assertFalse(summarize(e,e['inventory'],[d])['publishable'])
 
 if __name__=='__main__': unittest.main()
