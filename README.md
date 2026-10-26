@@ -139,11 +139,12 @@ Use the source commit recorded in the report and mount its checkout:
 
 ```bash
 docker run --rm --ulimit nofile=65536:65536 \
-  -v "$PWD:/source:ro" -w /source \
-  -e PYTHONDONTWRITEBYTECODE=1 -e PYASC_CACHE_DIR=/tmp/pyasc-cache \
+  -v "$PWD:/source:ro" -w /tmp \
+  -e HOME=/tmp -e PYTHONDONTWRITEBYTECODE=1 \
+  -e PYASC_CACHE_DIR=/tmp/pyasc-cache -e PYASC_DUMP_PATH=/tmp/pyasc-dumps \
   ghcr.io/compiler-team-ru/pyasc-sim-dev@sha256:<overlay-digest> \
   python3 -m pytest -c /source/pyproject.toml \
-    experimental/asctile/python/test --backend Model --platform Ascend950PR_9599
+    /source/experimental/asctile/python/test --backend Model --platform Ascend950PR_9599
 ```
 
 For one test, replace the suite path with its module or exact pytest node ID.
