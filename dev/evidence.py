@@ -12,8 +12,8 @@ def pytest_collection_finish(session):
 
 
 def pytest_collectreport(report):
-    if report.failed:
-        events.append({'nodeid': report.nodeid, 'phase': 'collection', 'outcome': 'failed',
+    if report.failed or report.skipped:
+        events.append({'nodeid': report.nodeid, 'phase': 'collection', 'outcome': report.outcome,
                        'detail': str(report.longrepr)})
 
 

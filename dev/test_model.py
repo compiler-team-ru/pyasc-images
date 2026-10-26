@@ -73,6 +73,11 @@ class Gates(unittest.TestCase):
         e['events'].append({'nodeid':'broken.py','phase':'collection','outcome':'failed','detail':'ImportError'})
         with self.assertRaises(AssertionError): summarize(e,e['inventory'])
 
+    def test_skipped_module_is_not_complete_collection(self):
+        e=self.evidence()
+        e['events'].append({'nodeid':'optional.py','phase':'collection','outcome':'skipped','detail':'missing dependency'})
+        with self.assertRaises(AssertionError): summarize(e,e['inventory'])
+
     def test_diagnosis_hash_mismatch_blocks(self):
         e=self.evidence('different failure')
         d={'nodeid':e['inventory'][0],'detail_sha256':'0'*64,'category':'compiler','reason':'Other diagnostic'}

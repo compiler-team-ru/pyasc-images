@@ -175,7 +175,9 @@ def collect(image):
     folder = WORK / 'collection'
     rc = container(image, folder, pytest_command(['/source/' + SUITE], True), source=True)
     assert rc == 0, 'Full-suite collection failed; see collection/output.log'
-    inventory = json.loads((folder / 'evidence.json').read_text())['inventory']
+    evidence = json.loads((folder / 'evidence.json').read_text())
+    assert not evidence['events'], 'Collection skipped or failed modules; inspect collection evidence'
+    inventory = evidence['inventory']
     assert inventory and len(set(inventory)) == len(inventory), 'Empty or duplicate test inventory'
     return inventory
 
