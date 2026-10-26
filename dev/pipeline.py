@@ -36,7 +36,18 @@ def release(tag):
 def ensure_release(tag):
     if not release(tag):
         base.run('gh', 'release', 'create', tag, '--repo', REPO, '--target', os.environ['GITHUB_SHA'],
-                 '--title', tag, '--notes', 'Development image qualification. See dev-matrix.json; checkpoints are not publication approval.')
+                 '--prerelease', '--latest=false', '--title', tag, '--notes', 'Development image qualification. See dev-matrix.json; checkpoints are not publication approval.')
+
+
+def publish_qualification(data, cells):
+    report = {k: data[k] for k in ('base_report', 'base_report_sha256', 'recipe', 'qualification_recipe')}
+    report.update(schema_version=1, cells=cells,
+                  scope='Full source-pinned AscTile suite; environment publication is independent.')
+    name = 'qualification-' + data['qualification_recipe'][:16] + '.json'
+    for filename in (name, 'qualification.json'):
+        save(WORK / filename, report)
+    base.run('gh', 'release', 'upload', data['tag'], str(WORK / name), str(WORK / 'qualification.json'),
+             '--clobber', '--repo', REPO)
 
 
 def plan():
@@ -71,10 +82,15 @@ def plan():
             prior = qprior
         else:
             todo = pending(cells, prior.get('cells', []), os.environ.get('INPUT_CELLS', ''))
+        previous = {c['id']: c for c in prior.get('cells', [])}
+        exclusions_changed = any('incompatibility' in c and
+                                 (previous.get(c['id'], {}).get('status') != 'incompatible' or
+                                  previous.get(c['id'], {}).get('reason') != c['incompatibility']) for c in cells)
         chosen = {'cells': cells, 'pending': todo, 'previous': prior.get('cells', []), 'tag': tag,
                   'base_report': r['tag_name'], 'base_report_sha256': identity(report), 'recipe': rh,
                   'mode': 'qualify' if QUALIFY else 'publish', 'qualification_recipe': qualification_recipe(ROOT)}
-        if todo or not prior or any(m['status'] != 'pass' for m in prior.get('manifests', [])):
+        refresh = bool(todo or not prior or exclusions_changed or any(m['status'] != 'pass' for m in prior.get('manifests', [])))
+        if refresh:
             break
     if chosen is None and QUALIFY:
         save(WORK / 'dev-plan.json', {'mode': 'qualify', 'pending': [], 'cells': []})
@@ -86,9 +102,19 @@ def plan():
     assert chosen, 'No complete base matrix publication matches selection'
     ensure_release(chosen['tag'])
     save(WORK / 'dev-plan.json', chosen)
+    if QUALIFY and chosen['pending']:
+        previous = {c['id']: c for c in chosen['previous']}
+        initial = []
+        for c in chosen['cells']:
+            if c['base']['status'] == 'incompatible' or 'incompatibility' in c:
+                initial.append({**c, 'status': 'incompatible', 'reason': c.get('incompatibility', c['base'].get('reason'))})
+            else:
+                initial.append(previous.get(c['id'], {**c, 'status': 'pending',
+                                                     'reason': 'Full-suite execution has not completed for this qualification recipe.'}))
+        publish_qualification(chosen, initial)
     base.output('matrix', json.dumps({'include': [{'key': c['key'], 'runner': c['base']['runner']} for c in chosen['pending']]}))
     base.output('count', len(chosen['pending']))
-    base.output('report', str(bool(chosen['pending'] or not prior or any(m['status'] != 'pass' for m in prior.get('manifests', [])))).lower())
+    base.output('report', str(refresh).lower())
     print(json.dumps({'pending': len(chosen['pending']), 'cells': len(chosen['cells']), 'base_report': chosen['base_report']}))
 
 
@@ -293,16 +319,12 @@ def finish():
         results[c['id']] = c
     cells = []
     for c in data['cells']:
-        if c['base']['status'] == 'incompatible':
-            cells.append({**c, 'status': 'incompatible', 'reason': c['base']['reason']})
+        if c['base']['status'] == 'incompatible' or 'incompatibility' in c:
+            cells.append({**c, 'status': 'incompatible', 'reason': c.get('incompatibility', c['base'].get('reason'))})
         else:
             cells.append(results.get(c['id'], {**c, 'status': 'blocked', 'reason': 'Not yet qualified'}))
     if QUALIFY:
-        report = {k: data[k] for k in ('base_report', 'base_report_sha256', 'recipe', 'qualification_recipe')}
-        report.update(schema_version=1, cells=cells, scope='Full source-pinned AscTile suite; environment publication is independent.')
-        name = 'qualification-' + data['qualification_recipe'][:16] + '.json'
-        save(name, report)
-        base.run('gh', 'release', 'upload', data['tag'], name, '--clobber', '--repo', REPO)
+        publish_qualification(data, cells)
         if any(c['status'] != 'complete' or c['suite']['suite_status'] == 'failures'
                for c in cells if c['status'] != 'incompatible'):
             raise SystemExit('Full-suite qualification is incomplete or contains failures; environment publication is unaffected.')

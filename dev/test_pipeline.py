@@ -61,6 +61,47 @@ class Publication(unittest.TestCase):
     def test_collection_failure_still_blocks(self): self.exercise(collection_error=True)
     def test_full_failures_are_reported_without_republishing(self): self.exercise(qualification=True)
 
+    def test_exclusion_report_refresh_does_not_rebuild_published_cells(self):
+        with tempfile.TemporaryDirectory() as d, ExitStack() as stack:
+            work=Path(d)
+            cells=[{'id':'ok','key':'supported','base':{'status':'pass','runner':'ubuntu-24.04'}},
+                   {'id':'excluded','key':'unsupported','base':{'status':'pass'},'incompatibility':'No locked wheel'}]
+            prior={'cells':[{'id':'ok','status':'published'},{'id':'excluded','status':'blocked'}],
+                   'manifests':[{'status':'pass'}]}
+            parent={'cells':[{'status':'pass'}]*32}
+            stack.enter_context(patch.object(pipeline,'WORK',work))
+            stack.enter_context(patch.object(pipeline,'QUALIFY',False))
+            stack.enter_context(patch.dict(os.environ,{'INPUT_REPORT':'','INPUT_CELLS':''}))
+            stack.enter_context(patch.object(pipeline.base,'pages',return_value=[{'tag_name':'matrix-base','draft':False,'published_at':'date'}]))
+            stack.enter_context(patch.object(pipeline.base,'asset_json',side_effect=lambda r,n: parent if n=='matrix.json' else prior))
+            stack.enter_context(patch.object(pipeline,'expand',return_value=cells))
+            stack.enter_context(patch.object(pipeline,'recipe',return_value='recipe'))
+            stack.enter_context(patch.object(pipeline,'qualification_recipe',return_value='qualification'))
+            stack.enter_context(patch.object(pipeline,'release',return_value={'assets':[{'name':'dev-matrix.json'}]}))
+            stack.enter_context(patch.object(pipeline,'ensure_release'))
+            output=stack.enter_context(patch.object(pipeline.base,'output'))
+            pipeline.plan()
+            self.assertEqual(json.loads((work/'dev-plan.json').read_text())['pending'],[])
+            self.assertIn(('report','true'),[c.args for c in output.call_args_list])
+
+    def test_new_releases_cannot_take_latest(self):
+        with patch.object(pipeline, 'release', return_value=None), patch.object(pipeline.base, 'run') as run, \
+                patch.dict(os.environ, {'GITHUB_SHA':'sha'}):
+            pipeline.ensure_release('dev-tests-example')
+        self.assertIn('--prerelease', run.call_args.args)
+        self.assertIn('--latest=false', run.call_args.args)
+
+    def test_qualification_alias_preserves_pending_state(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(pipeline, 'WORK', Path(d)), \
+                patch.object(pipeline.base, 'run') as run:
+            data=dict(base_report='base', base_report_sha256='hash', recipe='image',
+                      qualification_recipe='a'*64, tag='dev-report')
+            pipeline.publish_qualification(data, [{'status':'pending'}])
+            report=json.loads((Path(d)/'qualification.json').read_text())
+            self.assertEqual(report['cells'], [{'status':'pending'}])
+            self.assertEqual(report, json.loads((Path(d)/('qualification-'+'a'*16+'.json')).read_text()))
+            self.assertEqual(run.call_count, 1)
+
     def test_scheduler_does_not_invalidate_image(self):
         from model import recipe, qualification_recipe
         with tempfile.TemporaryDirectory() as d:

@@ -7,13 +7,28 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from model import identity, pending, summarize, pair_tag, recipe
+from model import identity, pending, summarize, pair_tag, recipe, expand
 
 class Gates(unittest.TestCase):
     def evidence(self, failure=None):
         return {'inventory':['a.py::test_a'], 'exitstatus':1 if failure else 0,
                 'events':[{'nodeid':'a.py::test_a','phase':p,'outcome':'failed' if failure and p=='call' else 'passed',
                            'detail':failure if failure and p=='call' else '', 'xfail':None} for p in ('setup','call','teardown')]}
+
+    def test_new_base_python39_does_not_schedule_unlocked_overlay(self):
+        import itertools
+        cells=[]
+        for u,c,p,a in itertools.product(('22.04','24.04'),('9.0.0','9.2.0'),('3.9','3.10','3.11','3.12'),('amd64','arm64')):
+            cells.append(dict(key=f'{u}-{c}-{p}-{a}', id=str(len(cells)), status='pass', source_sha='source',
+                              version='1', digest='sha256:'+str(len(cells)),
+                              image='ghcr.io/compiler-team-ru/pyasc-sim@sha256:'+str(len(cells)),
+                              environment=dict(ubuntu=u,cann=c,python=p,arch=a)))
+        expanded=expand(dict(cells=cells,source_sha='source',recipe='base'), 'overlay')
+        self.assertEqual(len(pending(expanded, [])), 24)
+        exclusions=[c for c in expanded if 'incompatibility' in c]
+        self.assertEqual(len(exclusions), 8)
+        self.assertTrue(all(c['base']['status']=='pass' for c in exclusions))
+        self.assertTrue(all('dependency lock' in c['incompatibility'] for c in exclusions))
 
     def test_success(self):
         e=self.evidence()

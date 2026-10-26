@@ -161,3 +161,108 @@ qualification report and do not overwrite or withdraw environment-qualified imag
 Exact reviewed diagnoses distinguish compiler, numerical and platform failures;
 unreviewed failures remain unclassified. No new skips, expected failures or reduced parameter sets
 are introduced. Upstream skips, xfails and unexpected passes remain visible.
+
+### Discovery and stable reports
+
+The intended policy is an overlay for every complete base publication, not only
+explicit requests. `dev-images.yaml` checks at minute 47 each hour (UTC), selecting
+the oldest unfinished complete base report and processing one publication per run.
+A failed older publication can delay newer ones; an exact `report` input bypasses
+that queue. A schedule is a requested cadence, not a completion deadline. The
+separate qualification workflow checks at minute 57 and after successful overlay
+runs; its concurrency group does not block overlay publication.
+
+Development reports and test checkpoints are GitHub prereleases. Both development
+workflows run `dev/releases.py` to repair historical release metadata and keep the
+newest complete base report at:
+
+<https://github.com/compiler-team-ru/pyasc-images/releases/latest/download/matrix.json>
+
+Use exact release URLs and image digests for reproducible experiments. Release
+metadata repair does not change a base report, image, wheel, or recipe.
+
+Python 3.9 exclusions are source-specific. The October 23 base records an upstream
+import incompatibility; the October 24 base passed all 32 minimal cells. The current
+development dependency lock covers only Python 3.10–3.12. Its eight Python 3.9
+candidates therefore remain excluded from the overlay, with a separate lock-scope
+reason; this is not evidence that the newer base or upstream source is broken.
+
+### Qualification report contract
+
+For an exact development release `<dev-release>`, the stable qualification URL is:
+
+```
+https://github.com/compiler-team-ru/pyasc-images/releases/download/<dev-release>/qualification.json
+```
+
+It is created when qualification is planned and updated when the matrix run finishes.
+Before planning it may be absent; a missing report means **no full-suite conclusion**.
+The alias has identical content to `qualification-<qualification_recipe[:16]>.json`.
+The full `qualification_recipe` hashes `dev/check.py`, `dev/evidence.py`,
+`dev/pipeline.py`, and `dev/model.py`; it is neither the overlay image recipe nor the
+base recipe. Changes to those qualification inputs invalidate checkpoint reuse.
+Recipe-specific reports remain available when the alias advances. Both URLs are
+mutable progress snapshots, not immutable test certificates.
+
+Schema version 1 contains `base_report`, `base_report_sha256`, `recipe` (overlay),
+`qualification_recipe`, and `cells`. Cell identity includes `key`, `id`, `base`
+(including `source_sha`), and the published overlay `image`/`digest` when available.
+The environment report's `suite` and manifest `suite_status` are publication-time
+snapshots; they do not advance as qualification progresses.
+
+| Qualification cell | Meaning for a consumer |
+|---|---|
+| `status: pending` | `not-run` / no completed evidence for this recipe; execution may be in progress |
+| `status: complete`, `suite.suite_status: passed` | Complete execution with no unexpected failures; inspect skip/xfail counts |
+| `status: complete`, `suite.suite_status: failures` | `failed`; exact failures and reviewed/unreviewed diagnoses are recorded |
+| `status: incomplete` or `blocked` | `blocked`; inspect `phase`, `reason`, `run_url`, and any `partial_suite` |
+| `status: incompatible` | Excluded with an explicit base or overlay reason; never a suite pass |
+
+A complete `suite` has `inventory` (exact node IDs), `collected`, `executed`,
+`suite_status`, and `modules`. Each module has `module`, `counts` (`passed`, `failed`,
+`skipped`, `xfail`, `xpass` as present), `failures`, `collected`, `executed`,
+`suite_status`, `evidence_url`, and `evidence_sha256`. `publishable` is the historical
+name for the diagnosis review gate; it does not control environment publication.
+
+Each module archive contains `identity.json`, `evidence.json`, `junit.xml`, and
+`output.log`. `evidence.json` contains the collected `inventory`, pytest `exitstatus`,
+and per-case phase events: `nodeid`, `phase` (setup/call/teardown), `outcome`, `xfail`,
+`detail`, and `duration`. JUnit also records per-case outcomes. Upstream skipped and
+expected-failure cases must retain those outcomes, rather than being counted as
+numerical passes. Strict unexpected passes remain failures.
+
+**Interruption limitation:** the current plugin writes evidence at session end.
+OOM, timeout, or a killed runner may leave no evidence for the interrupted module.
+A cell is then incomplete/blocked, not a failed kernel. `partial_suite` contains
+only finished modules; an absent module may have been interrupted or never started.
+The report does not yet supply a reliable four-state per-case inventory for that
+situation, nor does exit 137 prove OOM. Consumers must keep unresolved modules
+`blocked`/unknown until logs and host evidence diagnose them; they must not infer
+`failed` or `not-run` from absence alone. Runner limits are two CPUs and 12 GiB per
+container, up to three hours per module and six hours per matrix job. These are
+resource limits, not kernel correctness criteria.
+
+### Consuming upstream tests
+
+Use the test tree at the **same source commit as the installed wheel**. Keep the
+parent `conftest.py` and configuration when selecting a subtree. Based on the
+fixtures at `d0f64a63c432761aa57648e67be7582780a17561`:
+
+| Subtree | What its checks exercise |
+|---|---|
+| `unit/` | Frontend/IR/API checks; the autouse fixture mocks the compiler and launcher and verifies generated IR. This is not simulator numerical execution. |
+| `operations/` | Operation-level JIT execution with reference checks, including Torch references. Useful as a separate simulator correctness gate. |
+| `target/` | Larger target kernels, including `matmul_v3/` and `kimi_k3/`; the subtree requires C310 and includes resource-heavy cases. |
+| `kernels/` | Additional kernels, also requiring C310; not covered by selecting `target/` alone. |
+
+`target/` is a reasonable focused downstream gate, not the entire upstream
+correctness reference. `unit/` and `operations/` are also usable checks, with their
+fixture semantics kept distinct. The shared default is backend `Model`, platform
+`Ascend950PR_9599`, and CPU Torch. NPU/profiling paths have different requirements.
+These fixtures establish that simulator execution is supported, not that every
+parameterization passes on every matrix cell or fits a hosted runner.
+
+Do not describe `--compile-only` as numerical qualification: upstream mocks launch
+and numerical assertions in that mode. Keep upstream skip/xfail reasons and separate
+resource blockers from compiler or numerical failures. The old 4,293-case inventory
+belongs to `ea2dbf9d`; use each newer report's collected inventory, not a fixed count.

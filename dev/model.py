@@ -31,6 +31,9 @@ def expand(base, recipe_hash):
         if parent['status'] == 'pass':
             assert parent['image'] == 'ghcr.io/compiler-team-ru/pyasc-sim@' + parent['digest']
             e = parent['environment']
+            if e['python'] not in ('3.10', '3.11', '3.12'):
+                c['incompatibility'] = ('The development dependency lock supports Python 3.10–3.12 only. '
+                                        'This base image passed; the overlay has no locked CPU Torch wheel for Python ' + e['python'] + '.')
             c['tag'] = (f'ghcr.io/compiler-team-ru/pyasc-sim-dev:v{parent["version"]}-cann{e["cann"]}'
                         f'-u{e["ubuntu"]}-py{e["python"]}-r{recipe_hash[:12]}-b{base["recipe"][:12]}-{e["arch"]}')
         cells.append(c)
@@ -41,7 +44,8 @@ def pending(cells, previous, selected=''):
     keys = set(filter(None, selected.split(',')))
     assert not keys or keys <= {c['key'] for c in cells}, 'Unknown cell selection'
     done = {c['id'] for c in previous if c['status'] == 'published'}
-    return [c for c in cells if c['base']['status'] == 'pass' and c['id'] not in done and (not keys or c['key'] in keys)]
+    return [c for c in cells if c['base']['status'] == 'pass' and 'incompatibility' not in c
+            and c['id'] not in done and (not keys or c['key'] in keys)]
 
 
 def summarize(evidence, expected, diagnoses=()):
