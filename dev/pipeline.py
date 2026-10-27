@@ -1,4 +1,5 @@
 """Build development overlays and qualify the complete, source-pinned AscTile suite."""
+from collections import Counter
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -14,6 +16,9 @@ sys.path.insert(0, str(ROOT / 'ci'))
 import pipeline as base
 from model import expand, identity, pair_tag, pending, recipe, qualification_recipe, summarize
 
+from qualification import COMPATIBLE_RECIPES, aggregate, asset_json, cell_status, interruption, module_order, partial_cases
+
+RUN_STARTED = time.monotonic()
 REPO = base.REPO
 WORK = ROOT / 'work'
 SUITE = 'experimental/asctile/python/test'
@@ -57,23 +62,32 @@ def plan():
     candidates = [r for r in releases if r['tag_name'].startswith('matrix-') and not r['draft']
                   and (not wanted or r['tag_name'] == wanted)]
     chosen = None
-    for r in sorted(candidates, key=lambda x: x['published_at']):
-        report = base.asset_json(r, 'matrix.json')
+    def priority(candidate):
+        if not QUALIFY or wanted:
+            return ('', candidate['published_at'])
+        dev_tag = 'dev-' + candidate['tag_name'] + '-' + recipe(ROOT)[:12]
+        dev_release = next((r for r in releases if r['tag_name'] == dev_tag), {})
+        qname = 'qualification-' + qualification_recipe(ROOT)[:16] + '.json'
+        asset = next((a for a in dev_release.get('assets', []) if a['name'] == qname), {})
+        return (asset.get('updated_at', ''), candidate['published_at'])
+    for r in sorted(candidates, key=priority):
+        report = asset_json(r, 'matrix.json')
         if len(report['cells']) != 32 or any(c['status'] not in ('pass', 'incompatible') for c in report['cells']):
             continue
         rh = recipe(ROOT)
         cells = expand(report, rh)
         tag = 'dev-' + r['tag_name'] + '-' + rh[:12]
         prior_release = release(tag)
-        prior = base.asset_json(prior_release, 'dev-matrix.json') if prior_release and any(a['name'] == 'dev-matrix.json' for a in prior_release['assets']) else {}
+        prior = asset_json(prior_release, 'dev-matrix.json') if prior_release and any(a['name'] == 'dev-matrix.json' for a in prior_release['assets']) else {}
         if QUALIFY:
             if not prior:
                 continue
             published = {c['id']: c for c in prior['cells'] if c['status'] == 'published'}
             qr = qualification_recipe(ROOT)
             qname = 'qualification-' + qr[:16] + '.json'
-            qprior = base.asset_json(prior_release, qname) if any(a['name'] == qname for a in prior_release['assets']) else {}
-            complete = {c['id'] for c in qprior.get('cells', []) if c['status'] == 'complete'}
+            qprior = asset_json(prior_release, qname) if any(a['name'] == qname for a in prior_release['assets']) else {}
+            complete = {c['id'] for c in qprior.get('cells', []) if c['status'] == 'complete' or
+                        c.get('retryable') is False and os.environ.get('DEV_RETRY_BLOCKED') != 'true'}
             selected = set(filter(None, os.environ.get('INPUT_CELLS', '').split(',')))
             assert not selected or selected <= {c['key'] for c in cells}
             cells = [{**published.get(c['id'], c), 'qualification_recipe': qr} for c in cells]
@@ -122,7 +136,7 @@ def container(image, directory, command, *, source=False, timeout=1800, log=None
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o777)
     name = 'dev-' + identity(str(directory))[:16]
-    args = ['timeout', '--kill-after=20s', str(timeout), 'docker', 'run', '--rm', '--name', name,
+    args = ['timeout', '--kill-after=20s', str(timeout), 'docker', 'run', '--name', name,
             '--network', 'none', '--cpus', '2', '--memory', '12g', '--ulimit', 'nofile=65536:65536',
             '-v', str(directory.resolve()) + ':/results', '-w', '/results', '-e', 'HOME=/results',
             '-e', 'PYASC_CACHE_DIR=/results/cache', '-e', 'PYASC_DUMP_PATH=/results/dumps', '-e', 'PYASC_DRY_RUN=0',
@@ -134,6 +148,10 @@ def container(image, directory, command, *, source=False, timeout=1800, log=None
     try:
         with open(log or directory / 'output.log', 'w') as stream:
             result = subprocess.run(args + [image] + command, stdout=stream, stderr=subprocess.STDOUT)
+        inspection = subprocess.run(['docker', 'inspect', name, '--format', '{{json .State}}'], capture_output=True, text=True)
+        state = json.loads(inspection.stdout) if inspection.returncode == 0 else {}
+        save(directory / 'container-state.json', {'returncode': result.returncode, 'timeout_seconds': timeout,
+                                                'state': state, 'inspection_error': inspection.stderr if inspection.returncode else None})
         return result.returncode
     finally:
         subprocess.run(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -209,58 +227,132 @@ def collect(image):
 
 
 def suite(image, cell, tag):
-    # Keep each cell below GitHub's 1000-assets-per-release limit.
     tag = 'dev-tests-' + cell['id'] + '-' + cell['qualification_recipe'][:12]
     ensure_release(tag)
     inventory = collect(image)
     modules = {}
     for node in inventory:
         modules.setdefault(node.split('::')[0], []).append(node)
-    assets = {a['name']: a for a in release(tag)['assets']}
-    summaries = []
+    current = release(tag)
+    sources = [(cell['qualification_recipe'], tag, current)]
+    for compatible in COMPATIBLE_RECIPES:
+        old_tag = 'dev-tests-' + cell['id'] + '-' + compatible[:12]
+        old = release(old_tag)
+        if old:
+            sources.append((compatible, old_tag, old))
+    prior = asset_json(current, 'progress.json') if any(a['name'] == 'progress.json' for a in current['assets']) else {}
+    if prior:
+        assert prior['cell_id'] == cell['id'] and prior['qualification_recipe'] == cell['qualification_recipe']
+        assert prior['suite']['inventory'] == inventory
+    previous = {m['module']: m for m in prior.get('suite', {}).get('modules', [])}
+    summaries = {m: {'module': m, 'status': 'not-run', 'collected': len(nodes), 'executed': 0}
+                 for m, nodes in modules.items()}
     diagnoses = json.loads((ROOT / 'dev/diagnoses.json').read_text())
-    for module, nodes in modules.items():
+    budget = int(os.environ.get('DEV_BUDGET_MINUTES') or '240') * 60
+    assert 60 <= budget <= 18000
+    deadline = RUN_STARTED + budget
+    maximum = int(os.environ.get('DEV_MAX_MODULES') or '0')
+    assert maximum >= 0
+    attempted = 0
+    last_upload = 0.0
+
+    def checkpoint(force=False):
+        nonlocal last_upload
+        result = aggregate(inventory, list(summaries.values()))
+        save(WORK / 'suite.json', result)
+        save(WORK / 'progress.json', {'cell_id': cell['id'], 'qualification_recipe': cell['qualification_recipe'],
+                                     'run_url': f'https://github.com/{REPO}/actions/runs/{os.environ["GITHUB_RUN_ID"]}',
+                                     'suite': result})
+        if force or time.monotonic() - last_upload >= 300:
+            base.run('gh', 'release', 'upload', tag, str(WORK / 'progress.json'), '--clobber', '--repo', REPO)
+            last_upload = time.monotonic()
+        return result
+
+    # Restore every reusable module before allocating time to unfinished tests.
+    remaining = []
+    for module in sorted(modules, key=module_order):
+        nodes = modules[module]
         name = checkpoint_name(cell, module)
+        found = next(((qr, source_tag, a) for qr, source_tag, r in sources for a in r['assets'] if a['name'] == name), None)
         folder = WORK / 'shards' / identity(module)[:16]
         folder.mkdir(parents=True, exist_ok=True)
-        archive = WORK / name
-        if name in assets:
-            base.download(assets[name]['browser_download_url'], archive)
+        if found:
+            qr, source_tag, asset = found
+            archive = WORK / name
+            expected_hash = (asset.get('digest') or '').removeprefix('sha256:') or None
+            base.download(asset['browser_download_url'] + '?asset=' + str(asset['id']), archive, expected_hash)
             with tarfile.open(archive) as tar:
                 for member in tar:
-                    assert member.name in ('evidence.json', 'junit.xml', 'output.log', 'identity.json') and member.isfile()
+                    assert member.name in ('evidence.json', 'junit.xml', 'output.log', 'identity.json', 'container-state.json') and member.isfile()
                     (folder / member.name).write_bytes(tar.extractfile(member).read())
-            assert json.loads((folder / 'identity.json').read_text()) == {'cell_id': cell['id'], 'module': module, 'qualification_recipe': cell['qualification_recipe']}
+            assert json.loads((folder / 'identity.json').read_text()) == {'cell_id': cell['id'], 'module': module, 'qualification_recipe': qr}
+            summary = summarize(json.loads((folder / 'evidence.json').read_text()), nodes, diagnoses)
+            summaries[module] = {'module': module, 'status': 'complete', **summary,
+                                 'evidence_recipe': qr, 'evidence_url': asset['browser_download_url'],
+                                 'evidence_sha256': hashlib.sha256(archive.read_bytes()).hexdigest()}
+        elif previous.get(module, {}).get('retryable') is False and os.environ.get('DEV_RETRY_BLOCKED') != 'true':
+            summaries[module] = previous[module]
         else:
-            path = module if module.startswith('/source/') else '/source/' + module
-            rc = container(image, folder, pytest_command([path]), source=True, timeout=10800)
-            assert rc in (0, 1), f'Incomplete module {module}: exit {rc}'
-            assert (folder / 'evidence.json').exists(), f'Missing evidence: {module}'
-            evidence = json.loads((folder / 'evidence.json').read_text())
-            summarize(evidence, nodes, diagnoses)  # Verify complete before retaining a reusable checkpoint.
-            save(folder / 'identity.json', {'cell_id': cell['id'], 'module': module, 'qualification_recipe': cell['qualification_recipe']})
-            with tarfile.open(archive, 'w:gz') as tar:
-                for filename in ('evidence.json', 'junit.xml', 'output.log', 'identity.json'):
+            remaining.append(module)
+    checkpoint(force=True)
+    for module in remaining:
+        seconds = int(deadline - time.monotonic() - 120)
+        if seconds < 60 or maximum and attempted >= maximum:
+            break
+        nodes = modules[module]
+        folder = WORK / 'shards' / identity(module)[:16]
+        summaries[module].update(status='running', retryable=True)
+        checkpoint()
+        limit = min(10800, seconds)
+        path = module if module.startswith('/source/') else '/source/' + module
+        rc = container(image, folder, pytest_command([path]), source=True, timeout=limit)
+        attempted += 1
+        evidence = json.loads((folder / 'evidence.json').read_text()) if (folder / 'evidence.json').exists() else {}
+        complete = False
+        try:
+            assert rc in (0, 1), f'Interrupted: exit {rc}'
+            summary = summarize(evidence, nodes, diagnoses)
+            complete = True
+        except (AssertionError, KeyError) as error:
+            state = json.loads((folder / 'container-state.json').read_text()).get('state', {})
+            category, reason, retryable = interruption(rc, state, limit < 10800)
+            if rc in (0, 1):
+                category, reason = 'evidence', str(error)
+            cases = partial_cases(evidence, nodes)
+            summary = {'suite_status': 'incomplete', 'category': category, 'reason': reason,
+                       'retryable': retryable, 'collected': len(nodes),
+                       'executed': sum(c['completed'] for c in cases), 'cases': cases,
+                       'counts': dict(Counter(c['outcome'] for c in cases if c['completed'])),
+                       'container': json.loads((folder / 'container-state.json').read_text()), 'publishable': False}
+        name = checkpoint_name(cell, module)
+        if not complete:
+            name = ('blocked-' + name.removeprefix('tests-').removesuffix('.tar.gz') + '-' +
+                    os.environ['GITHUB_RUN_ID'] + '-' + os.environ.get('GITHUB_RUN_ATTEMPT', '1') + '.tar.gz')
+        archive = WORK / name
+        save(folder / 'identity.json', {'cell_id': cell['id'], 'module': module, 'qualification_recipe': cell['qualification_recipe']})
+        with tarfile.open(archive, 'w:gz') as tar:
+            for filename in ('evidence.json', 'junit.xml', 'output.log', 'identity.json', 'container-state.json'):
+                if (folder / filename).exists():
                     tar.add(folder / filename, arcname=filename)
-            base.run('gh', 'release', 'upload', tag, str(archive), '--repo', REPO)
-        summary = summarize(json.loads((folder / 'evidence.json').read_text()), nodes, diagnoses)
-        summaries.append({'module': module, **summary, 'evidence_url': f'https://github.com/{REPO}/releases/download/{tag}/{name}',
-                          'evidence_sha256': hashlib.sha256(archive.read_bytes()).hexdigest()})
-        save(WORK / 'suite.json', {'inventory': inventory, 'modules': summaries})
-        print(json.dumps({'module': module, 'counts': summary['counts'], 'publishable': summary['publishable']}), flush=True)
-        # Compilation caches and dumps can be large. Keep only durable evidence.
+        base.run('gh', 'release', 'upload', tag, str(archive), '--repo', REPO)
+        summaries[module] = {'module': module, 'status': 'complete' if complete else 'blocked', **summary,
+                             'evidence_recipe': cell['qualification_recipe'],
+                             'evidence_url': f'https://github.com/{REPO}/releases/download/{tag}/{name}',
+                             'evidence_sha256': hashlib.sha256(archive.read_bytes()).hexdigest()}
+        checkpoint(force=not complete)
+        print(json.dumps({'module': module, 'status': summaries[module]['status'], 'counts': summary['counts']}), flush=True)
         for cache in ('cache', 'dumps'):
             shutil.rmtree(folder / cache, ignore_errors=True)
-    assert sum(s['executed'] for s in summaries) == len(inventory)
-    return {'inventory': inventory, 'modules': summaries, 'collected': len(inventory),
-            'executed': len(inventory), 'publishable': all(s['publishable'] for s in summaries),
-            'suite_status': 'failures' if any(s['failures'] for s in summaries) else 'passed'}
-
+    return checkpoint(force=True)
 
 def build():
+    global RUN_STARTED
+    RUN_STARTED = time.monotonic()
     data = json.loads((WORK / 'dev-plan.json').read_text())
     cell = next(c for c in data['pending'] if c['key'] == os.environ['CELL_KEY'])
     result = {**cell, 'status': 'blocked', 'run_url': f'https://github.com/{REPO}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'}
+    if QUALIFY:
+        result.pop('suite', None)
     phase = 'assemble'
     try:
         if QUALIFY:
@@ -281,7 +373,10 @@ def build():
         if QUALIFY:
             result['suite'] = suite(image, cell, data['tag'])
             result['review_status'] = 'reviewed' if result['suite']['publishable'] else 'needs-review'
-            result['status'] = 'complete'
+            result['status'] = cell_status(result['suite'])
+            result['retryable'] = result['suite'].get('retryable', False)
+            if result['status'] != 'complete':
+                result.update(phase='suite', reason='Batch saved with unfinished or blocked modules; inspect suite.modules')
             return
         inventory = collect(image)
         result['suite'] = {'suite_status': 'pending', 'collected': len(inventory), 'executed': 0,
@@ -303,7 +398,7 @@ def build():
         result['status'] = 'published'
     except Exception as error:
         result.update(status='incomplete' if QUALIFY else 'blocked', phase=phase, reason=str(error))
-        if (WORK / 'suite.json').exists() and 'suite' not in result:
+        if (WORK / 'suite.json').exists():
             result['partial_suite'] = json.loads((WORK / 'suite.json').read_text())
         raise
     finally:
@@ -317,6 +412,29 @@ def finish():
         c = json.loads(path.read_text())
         assert c['id'] in {x['id'] for x in data['pending']}
         results[c['id']] = c
+    if QUALIFY:
+        for c in data['pending']:
+            record = results.get(c['id'], {**c, 'status': 'incomplete', 'phase': 'runner',
+                                          'reason': 'Runner interrupted before writing its result'})
+            folder = Path('results') / ('result-' + c['key'])
+            local = folder / 'suite.json'
+            partial = json.loads(local.read_text()) if local.exists() else record.get('partial_suite')
+            if partial is None and c['id'] not in results:
+                checkpoint_release = release('dev-tests-' + c['id'] + '-' + c['qualification_recipe'][:12])
+                if checkpoint_release and any(a['name'] == 'progress.json' for a in checkpoint_release['assets']):
+                    progress = asset_json(checkpoint_release, 'progress.json')
+                    assert progress['cell_id'] == c['id'] and progress['qualification_recipe'] == c['qualification_recipe']
+                    partial = progress['suite']
+            if partial:
+                for module in partial['modules']:
+                    module.setdefault('status', 'complete')
+                    if module['status'] == 'running':
+                        module.update(status='blocked', reason='Runner interrupted during this module', retryable=True)
+                record['suite'] = aggregate(partial['inventory'], partial['modules'])
+                record['status'] = cell_status(record['suite'])
+                record['retryable'] = record['suite']['retryable']
+                record.pop('partial_suite', None)
+            results[c['id']] = record
     cells = []
     for c in data['cells']:
         if c['base']['status'] == 'incompatible' or 'incompatibility' in c:
@@ -325,9 +443,11 @@ def finish():
             cells.append(results.get(c['id'], {**c, 'status': 'blocked', 'reason': 'Not yet qualified'}))
     if QUALIFY:
         publish_qualification(data, cells)
-        if any(c['status'] != 'complete' or c['suite']['suite_status'] == 'failures'
-               for c in cells if c['status'] != 'incompatible'):
-            raise SystemExit('Full-suite qualification is incomplete or contains failures; environment publication is unaffected.')
+        print(json.dumps({'qualification_states': dict(Counter(c['status'] for c in cells))}))
+        if any(c['status'] == 'complete' and c['suite']['suite_status'] == 'failures' for c in cells):
+            raise SystemExit('Completed suites contain test failures; environment publication is unaffected.')
+        if any(c['status'] not in ('complete', 'incompatible') for c in cells):
+            print('::notice::Qualification progress saved; the full suite remains incomplete. See qualification.json.')
         return
     groups = {}
     for c in cells:

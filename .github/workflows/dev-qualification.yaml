@@ -15,8 +15,23 @@ on:
         description: 'Comma-separated cell keys; empty selects the full matrix'
         default: ''
         type: string
+      max_modules:
+        description: 'Maximum newly executed modules per cell; 0 resumes all within the time budget'
+        default: '0'
+        type: string
+      budget_minutes:
+        description: 'Per-cell batch budget (1–300 minutes); unfinished work resumes later'
+        default: '240'
+        type: string
+      retry_blocked:
+        description: 'Retry diagnosed resource blockers after addressing the constraint'
+        default: false
+        type: boolean
 env:
   DEV_MODE: qualify
+  DEV_MAX_MODULES: ${{ inputs.max_modules || '0' }}
+  DEV_BUDGET_MINUTES: ${{ inputs.budget_minutes || '240' }}
+  DEV_RETRY_BLOCKED: ${{ inputs.retry_blocked || false }}
 permissions:
   contents: read
 concurrency:
@@ -99,6 +114,8 @@ jobs:
             work/shards/*/evidence.json
             work/shards/*/junit.xml
             work/shards/*/output.log
+            work/shards/*/container-state.json
+            work/progress.json
           if-no-files-found: warn
           retention-days: 30
   report:

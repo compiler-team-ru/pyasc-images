@@ -199,8 +199,12 @@ It is created when qualification is planned and updated when the matrix run fini
 Before planning it may be absent; a missing report means **no full-suite conclusion**.
 The alias has identical content to `qualification-<qualification_recipe[:16]>.json`.
 The full `qualification_recipe` hashes `dev/check.py`, `dev/evidence.py`,
-`dev/pipeline.py`, and `dev/model.py`; it is neither the overlay image recipe nor the
-base recipe. Changes to those qualification inputs invalidate checkpoint reuse.
+`dev/pipeline.py`, `dev/model.py`, and `dev/qualification.py`; it is neither the overlay image recipe nor the
+base recipe. Completed checkpoints from the explicitly reviewed compatible recipes listed in
+`dev/qualification.py` may be reused for the exact same image/cell and collected
+module inventory. Their original recipe, URL, and SHA256 remain in the report.
+Partial evidence is never imported as a complete checkpoint. Other qualification
+changes invalidate reuse.
 Recipe-specific reports remain available when the alias advances. Both URLs are
 mutable progress snapshots, not immutable test certificates.
 
@@ -231,16 +235,36 @@ and per-case phase events: `nodeid`, `phase` (setup/call/teardown), `outcome`, `
 expected-failure cases must retain those outcomes, rather than being counted as
 numerical passes. Strict unexpected passes remain failures.
 
-**Interruption limitation:** the current plugin writes evidence at session end.
-OOM, timeout, or a killed runner may leave no evidence for the interrupted module.
-A cell is then incomplete/blocked, not a failed kernel. `partial_suite` contains
-only finished modules; an absent module may have been interrupted or never started.
-The report does not yet supply a reliable four-state per-case inventory for that
-situation, nor does exit 137 prove OOM. Consumers must keep unresolved modules
-`blocked`/unknown until logs and host evidence diagnose them; they must not infer
-`failed` or `not-run` from absence alone. Runner limits are two CPUs and 12 GiB per
-container, up to three hours per module and six hours per matrix job. These are
-resource limits, not kernel correctness criteria.
+**Resumable execution:** pytest atomically checkpoints its inventory, active node,
+and every phase result during execution. After a module exits, the runner records
+Docker's state before removing the container. `OOMKilled: true` is an OOM diagnosis;
+exit 137 alone remains an unexplained interruption. Blocked modules retain logs,
+partial cases (`passed | failed | blocked | not-run`), and container state. Skips and
+xfails keep their separate `outcome` and never count as numerical passes. A hard
+runner loss can still leave the last unobserved phase unknown.
+
+A blocker does not abort subsequent modules or become an upstream skip/xfail.
+Each cell's checkpoint release has `progress.json`, refreshed at five-minute
+intervals, on blockers, and at batch end. Local progress updates after every module;
+complete module archives are uploaded immediately and remain immutable. Qualification reports aggregate partial
+progress even when a runner could not write `dev-result.json`. `suite.complete` is
+true only when every module completed. Confirmed OOM, unexplained SIGKILL, and
+three-hour module timeouts remain blocked for diagnosis, with `retryable: false`.
+Use manual `retry_blocked: true` after addressing the constraint. Budget-interrupted
+and not-yet-run work resumes automatically. No parameterizations are removed.
+
+The default per-cell batch budget is four hours, below the six-hour job limit;
+`budget_minutes` (1–300) and `max_modules` (0 means unlimited within the budget)
+allow bounded manual batches. These controls pause qualification; they do not make
+a partial suite pass. Native containers retain two CPUs and 12 GiB. IR unit checks
+run first, followed by operations, kernels, and target tests. Completed evidence is
+restored before allocating time to new work. Automatic qualification rotates across
+publications by their last qualification attempt, so an unfinished older suite does
+not indefinitely exclude newer releases.
+
+A successful workflow can mean that a resumable batch saved its progress. Read the
+qualification JSON: `pending`, `incomplete`, and `blocked` are not suite passes.
+Completed suites containing unexpected test failures keep a failing workflow result.
 
 ### Consuming upstream tests
 

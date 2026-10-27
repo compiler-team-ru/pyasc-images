@@ -16,7 +16,7 @@ def recipe(root):
 
 
 def qualification_recipe(root):
-    names = ('check.py', 'evidence.py', 'pipeline.py', 'model.py')
+    names = ('check.py', 'evidence.py', 'pipeline.py', 'model.py', 'qualification.py')
     return identity({name: hashlib.sha256((root / 'dev' / name).read_bytes()).hexdigest() for name in names})
 
 

@@ -14,12 +14,13 @@ spec.loader.exec_module(pipeline)
 
 
 class Publication(unittest.TestCase):
-    def exercise(self, collection_error=False, qualification=False):
+    def exercise(self, collection_error=False, qualification=False, suite_error=False):
         with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
             work=Path(directory)
             cell={'id':'cell', 'key':'key', 'tag':'ghcr.io/compiler-team-ru/pyasc-sim-dev:tag',
                   'base':{'image':'base@sha256:base','source_sha':'source'},
-                  'image':'ghcr.io/compiler-team-ru/pyasc-sim-dev@sha256:dev','digest':'sha256:dev'}
+                  'image':'ghcr.io/compiler-team-ru/pyasc-sim-dev@sha256:dev','digest':'sha256:dev',
+                  'suite':{'suite_status':'pending','executed':0}}
             (work/'dev-plan.json').write_text(json.dumps({'pending':[cell],'tag':'release'}))
             stack.enter_context(patch.object(pipeline,'WORK',work))
             stack.enter_context(patch.object(pipeline,'QUALIFY',qualification))
@@ -38,12 +39,21 @@ class Publication(unittest.TestCase):
             stack.enter_context(patch.object(pipeline,'container',side_effect=container))
             stack.enter_context(patch.object(pipeline,'collect',side_effect=AssertionError('collection failed') if collection_error else None,return_value=['test_a']))
             suite=stack.enter_context(patch.object(pipeline,'suite',return_value={'publishable':False,'suite_status':'failures','executed':1}))
-            if collection_error:
+            if suite_error:
+                def interrupted(*args):
+                    pipeline.save(work/'suite.json', {'inventory':['a'], 'modules':[{'module':'a','executed':1}]})
+                    raise AssertionError('interrupted')
+                suite.side_effect=interrupted
+            if collection_error or suite_error:
                 with self.assertRaises(AssertionError): pipeline.build()
             else:
                 pipeline.build()
             result=json.loads((work/'dev-result.json').read_text())
-            if qualification:
+            if suite_error:
+                self.assertEqual(result['status'],'incomplete')
+                self.assertNotIn('suite',result)
+                self.assertEqual(result['partial_suite']['modules'][0]['executed'],1)
+            elif qualification:
                 self.assertEqual(result['status'],'complete')
                 self.assertEqual(result['review_status'],'needs-review')
                 self.assertEqual(result['suite']['suite_status'],'failures')
@@ -56,6 +66,8 @@ class Publication(unittest.TestCase):
                 self.assertEqual(result['suite']['executed'],0)
                 suite.assert_not_called()
             self.assertFalse(any(c.args[:2]==('docker','push') for c in run.call_args_list))
+
+    def test_interrupted_qualification_keeps_partial_progress(self): self.exercise(qualification=True,suite_error=True)
 
     def test_environment_publication_does_not_claim_full_pass(self): self.exercise()
     def test_collection_failure_still_blocks(self): self.exercise(collection_error=True)
@@ -73,7 +85,7 @@ class Publication(unittest.TestCase):
             stack.enter_context(patch.object(pipeline,'QUALIFY',False))
             stack.enter_context(patch.dict(os.environ,{'INPUT_REPORT':'','INPUT_CELLS':''}))
             stack.enter_context(patch.object(pipeline.base,'pages',return_value=[{'tag_name':'matrix-base','draft':False,'published_at':'date'}]))
-            stack.enter_context(patch.object(pipeline.base,'asset_json',side_effect=lambda r,n: parent if n=='matrix.json' else prior))
+            stack.enter_context(patch.object(pipeline,'asset_json',side_effect=lambda r,n: parent if n=='matrix.json' else prior))
             stack.enter_context(patch.object(pipeline,'expand',return_value=cells))
             stack.enter_context(patch.object(pipeline,'recipe',return_value='recipe'))
             stack.enter_context(patch.object(pipeline,'qualification_recipe',return_value='qualification'))
@@ -106,7 +118,7 @@ class Publication(unittest.TestCase):
         from model import recipe, qualification_recipe
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);(root/'dev').mkdir()
-            for name in ('Dockerfile','requirements.lock','torch.lock.json','check.py','evidence.py','pipeline.py','model.py'):
+            for name in ('Dockerfile','requirements.lock','torch.lock.json','check.py','evidence.py','pipeline.py','model.py','qualification.py'):
                 (root/'dev'/name).write_text(name)
             image,qualification=recipe(root),qualification_recipe(root)
             (root/'dev/pipeline.py').write_text('changed qualification policy')

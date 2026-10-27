@@ -5,10 +5,26 @@ from pathlib import Path
 
 inventory = []
 events = []
+active_node = None
+
+
+def checkpoint(exitstatus=None):
+    target = Path(os.environ["DEV_EVIDENCE"])
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"inventory": inventory, "events": events,
+                                     "active_node": active_node, "exitstatus": exitstatus}) + "\n")
+    temporary.replace(target)
+
+
+def pytest_runtest_logstart(nodeid, location):
+    global active_node
+    active_node = nodeid
+    checkpoint()
 
 
 def pytest_collection_finish(session):
     inventory.extend(item.nodeid for item in session.items)
+    checkpoint()
 
 
 def pytest_collectreport(report):
@@ -21,8 +37,8 @@ def pytest_runtest_logreport(report):
     events.append({'nodeid': report.nodeid, 'phase': report.when, 'outcome': report.outcome,
                    'xfail': getattr(report, 'wasxfail', None), 'detail': str(report.longrepr or ''),
                    'duration': report.duration})
+    checkpoint()
 
 
 def pytest_sessionfinish(session, exitstatus):
-    Path(os.environ['DEV_EVIDENCE']).write_text(json.dumps({
-        'inventory': inventory, 'events': events, 'exitstatus': int(exitstatus)}, indent=2) + '\n')
+    checkpoint(int(exitstatus))
