@@ -38,14 +38,22 @@ class Progress(unittest.TestCase):
         self.assertEqual(sum(c['completed'] for c in cases),1)
 
     def test_incomplete_aggregate_never_passes(self):
-        modules=[{'status':'complete','executed':1,'counts':{'passed':1},'publishable':True},
-                 {'status':'blocked','executed':0,'retryable':False}]
+        modules=[{'status':'complete','collected':1,'executed':1,'counts':{'passed':1},'publishable':True},
+                 {'status':'blocked','collected':1,'executed':0,'retryable':False}]
         s=aggregate(['a','b'],modules)
         self.assertEqual(s['executed'],1)
         self.assertEqual(cell_status(s),'blocked')
         self.assertFalse(s['publishable'])
         modules.append({'status':'not-run'})
         self.assertEqual(cell_status(aggregate(['a','b','c'],modules)),'incomplete')
+
+    def test_legacy_partial_module_list_cannot_claim_full_completion(self):
+        s=aggregate(['finished','missing'],[{'status':'complete','collected':1,'executed':1,
+                                           'counts':{'passed':1},'publishable':True}])
+        self.assertFalse(s['complete'])
+        self.assertTrue(s['retryable'])
+        self.assertFalse(s['publishable'])
+        self.assertEqual(s['suite_status'],'incomplete')
 
     def test_asset_checksum_rejects_stale_download(self):
         import io

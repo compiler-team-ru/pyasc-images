@@ -11,6 +11,7 @@ COMPATIBLE_RECIPES = (
     'f731ab20ccbd7abb1169fb7a0d37d84330cbb36558b79082d39c1fbc6e63d9ce',
     'b245baa902eaa59889884850e7664757d027a821339bc089d1d50387458b88d5',
     '5a24eea2adb6b2159954ed9a7228880449ecf71a8b60ab8396c7d7781d9bcbe1',
+    '107296aea0aaf0ee19f0e96b14256cf61c48bc488807b813a5fe788562443ef7',
 )
 
 
@@ -62,10 +63,12 @@ def aggregate(inventory, modules):
     counts = Counter()
     for module in modules:
         counts.update(module.get('counts', {}))
-    complete = all(m['status'] == 'complete' for m in modules)
+    executed = sum(m.get('executed', 0) for m in modules)
+    represented = sum(m.get('collected', m.get('executed', 0)) for m in modules)
+    complete = all(m['status'] == 'complete' for m in modules) and executed == len(inventory)
     return {'inventory': inventory, 'modules': modules, 'collected': len(inventory),
-            'executed': sum(m.get('executed', 0) for m in modules), 'counts': dict(counts),
-            'complete': complete, 'retryable': any(m['status'] != 'complete' and m.get('retryable', True) for m in modules),
+            'executed': executed, 'counts': dict(counts),
+            'complete': complete, 'retryable': represented < len(inventory) or any(m['status'] != 'complete' and m.get('retryable', True) for m in modules),
             'publishable': complete and all(m.get('publishable', False) for m in modules),
             'suite_status': ('failures' if any(m.get('failures') for m in modules) else 'passed') if complete else 'incomplete'}
 
