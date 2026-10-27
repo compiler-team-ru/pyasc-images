@@ -440,7 +440,7 @@ def finish():
         if c['base']['status'] == 'incompatible' or 'incompatibility' in c:
             cells.append({**c, 'status': 'incompatible', 'reason': c.get('incompatibility', c['base'].get('reason'))})
         else:
-            cells.append(results.get(c['id'], {**c, 'status': 'blocked', 'reason': 'Not yet qualified'}))
+            cells.append(results.get(c['id'], {**c, 'status': 'pending' if QUALIFY else 'blocked', 'reason': 'Not yet qualified'}))
     if QUALIFY:
         publish_qualification(data, cells)
         print(json.dumps({'qualification_states': dict(Counter(c['status'] for c in cells))}))

@@ -96,6 +96,14 @@ class Publication(unittest.TestCase):
             self.assertEqual(json.loads((work/'dev-plan.json').read_text())['pending'],[])
             self.assertIn(('report','true'),[c.args for c in output.call_args_list])
 
+    def test_unselected_qualification_cells_remain_pending(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(pipeline,'WORK',Path(d)), \
+                patch.object(pipeline,'QUALIFY',True), patch.object(pipeline,'publish_qualification') as publish:
+            pipeline.save(Path(d)/'dev-plan.json',{'previous':[], 'pending':[],
+                'cells':[{'id':'unselected','base':{'status':'pass'}}]})
+            pipeline.finish()
+            self.assertEqual(publish.call_args.args[1][0]['status'],'pending')
+
     def test_new_releases_cannot_take_latest(self):
         with patch.object(pipeline, 'release', return_value=None), patch.object(pipeline.base, 'run') as run, \
                 patch.dict(os.environ, {'GITHUB_SHA':'sha'}):
