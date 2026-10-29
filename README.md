@@ -245,6 +245,13 @@ runner loss can still leave the last unobserved phase unknown.
 The Python controller enforces deadlines and records `timed_out` explicitly;
 budget expiry is retryable and is never inferred from a SIGKILL exit code.
 
+For investigation, the manual **Replay recorded simulator failures** workflow accepts
+an exact `dev-matrix-...` release tag. It verifies the archived evidence checksums
+and reruns its failed node IDs on the original image digest and source revision,
+on native runners with fresh caches and unchanged upstream fixtures/assertions.
+Results and logs are retained in a `dev-diagnosis-<run-id>` release. These targeted
+diagnostics never update the full-suite qualification report or experiment pins.
+
 A blocker does not abort subsequent modules or become an upstream skip/xfail.
 Each cell's checkpoint release has `progress.json`, refreshed at five-minute
 intervals, on blockers, and at batch end. Local progress updates after every module;

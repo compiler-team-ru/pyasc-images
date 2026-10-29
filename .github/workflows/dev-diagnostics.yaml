@@ -1,0 +1,82 @@
+name: Replay recorded simulator failures
+on:
+  workflow_dispatch:
+    inputs:
+      report:
+        description: 'Exact dev-matrix release containing qualification.json'
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - id: plan
+        env:
+          INPUT_REPORT: ${{ inputs.report }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 dev/replay.py plan
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: replay-plan
+          path: work/replay-plan.json
+  replay:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: replay-plan
+          path: work
+      - run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+      - env:
+          CELL_KEY: ${{ matrix.key }}
+        run: python3 dev/replay.py run
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: ${{ matrix.key }}
+          path: |
+            work/replay-result.json
+            work/environment/output.log
+            work/replay/evidence.json
+            work/replay/junit.xml
+            work/replay/output.log
+            work/replay/container-state.json
+  report:
+    needs: [plan, replay]
+    if: always() && needs.plan.result == 'success' && needs.plan.outputs.count != '0'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: replay-plan
+          path: work
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: u*
+          path: results
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 dev/replay.py publish
