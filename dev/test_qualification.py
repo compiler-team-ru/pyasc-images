@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import time
@@ -22,6 +23,31 @@ def complete(nodes):
 
 
 class Progress(unittest.TestCase):
+    def test_deadline_is_retryable_and_container_is_removed(self):
+        for exitcode in (None, -9, 137, 0):
+            with self.subTest(exitcode=exitcode), tempfile.TemporaryDirectory() as d:
+                folder=Path(d)
+                def run(args, **kwargs):
+                    if args[:2] == ['docker', 'run']:
+                        self.assertEqual(kwargs['timeout'], 1)
+                        if exitcode is None:
+                            raise subprocess.TimeoutExpired(args, 1)
+                        return subprocess.CompletedProcess(args, exitcode)
+                    return subprocess.CompletedProcess(args, 0, '{"Running":true,"OOMKilled":false}', '')
+                with patch.object(pipeline.subprocess, 'run', side_effect=run) as execute:
+                    rc=pipeline.container('image', folder, ['sleep', '600'], timeout=1)
+                state=json.loads((folder/'container-state.json').read_text())
+                self.assertEqual(state['timed_out'], exitcode is None)
+                self.assertEqual(rc, 124 if exitcode is None else exitcode)
+                if exitcode is None:
+                    self.assertEqual(interruption(rc,state['state'],True),
+                                     ('budget','Qualification batch budget exhausted',True))
+                    self.assertEqual(interruption(rc,state['state'],False)[0], 'timeout')
+                elif exitcode in (-9,137):
+                    self.assertEqual(interruption(rc,state['state'],True)[0], 'interrupted')
+                    self.assertFalse(interruption(rc,state['state'],True)[2])
+                self.assertEqual(execute.call_args.args[0][:3], ['docker','rm','-f'])
+
     def test_kill_is_not_automatically_oom(self):
         self.assertEqual(interruption(137, {})[0], 'interrupted')
         self.assertFalse(interruption(137, {})[2])

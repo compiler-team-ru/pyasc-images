@@ -8,6 +8,7 @@ import urllib.request
 # Ascend950PR_9599, 2 CPUs, 12 GiB, assertions and upstream markers unchanged.
 # Only COMPLETE evidence can be imported. Remove these if execution semantics change.
 COMPATIBLE_RECIPES = (
+    '4973dbcb719cc5626e92361faf7b5cec060ade9d6eed17a1289220aa19b92842',
     'f731ab20ccbd7abb1169fb7a0d37d84330cbb36558b79082d39c1fbc6e63d9ce',
     'b245baa902eaa59889884850e7664757d027a821339bc089d1d50387458b88d5',
     '5a24eea2adb6b2159954ed9a7228880449ecf71a8b60ab8396c7d7781d9bcbe1',

@@ -242,6 +242,8 @@ exit 137 alone remains an unexplained interruption. Blocked modules retain logs,
 partial cases (`passed | failed | blocked | not-run`), and container state. Skips and
 xfails keep their separate `outcome` and never count as numerical passes. A hard
 runner loss can still leave the last unobserved phase unknown.
+The Python controller enforces deadlines and records `timed_out` explicitly;
+budget expiry is retryable and is never inferred from a SIGKILL exit code.
 
 A blocker does not abort subsequent modules or become an upstream skip/xfail.
 Each cell's checkpoint release has `progress.json`, refreshed at five-minute

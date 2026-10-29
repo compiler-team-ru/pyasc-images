@@ -136,7 +136,7 @@ def container(image, directory, command, *, source=False, timeout=1800, log=None
     directory.mkdir(parents=True, exist_ok=True)
     directory.chmod(0o777)
     name = 'dev-' + identity(str(directory))[:16]
-    args = ['timeout', '--kill-after=20s', str(timeout), 'docker', 'run', '--name', name,
+    args = ['docker', 'run', '--name', name,
             '--network', 'none', '--cpus', '2', '--memory', '12g', '--ulimit', 'nofile=65536:65536',
             '-v', str(directory.resolve()) + ':/results', '-w', '/results', '-e', 'HOME=/results',
             '-e', 'PYASC_CACHE_DIR=/results/cache', '-e', 'PYASC_DUMP_PATH=/results/dumps', '-e', 'PYASC_DRY_RUN=0',
@@ -146,13 +146,23 @@ def container(image, directory, command, *, source=False, timeout=1800, log=None
     if source:
         args += ['-v', str(WORK / 'source') + ':/source:ro', '-e', 'PYTHONPATH=/dev-check']
     try:
+        timed_out = False
         with open(log or directory / 'output.log', 'w') as stream:
-            result = subprocess.run(args + [image] + command, stdout=stream, stderr=subprocess.STDOUT)
+            try:
+                result = subprocess.run(args + [image] + command, stdout=stream, stderr=subprocess.STDOUT,
+                                        timeout=timeout)
+                returncode = result.returncode
+            except subprocess.TimeoutExpired:
+                # Own the deadline: GNU timeout's kill-after can kill the watchdog
+                # itself, returning -9 while the Docker container is still running.
+                timed_out = True
+                returncode = 124
         inspection = subprocess.run(['docker', 'inspect', name, '--format', '{{json .State}}'], capture_output=True, text=True)
         state = json.loads(inspection.stdout) if inspection.returncode == 0 else {}
-        save(directory / 'container-state.json', {'returncode': result.returncode, 'timeout_seconds': timeout,
+        save(directory / 'container-state.json', {'returncode': returncode, 'timeout_seconds': timeout,
+                                                'timed_out': timed_out,
                                                 'state': state, 'inspection_error': inspection.stderr if inspection.returncode else None})
-        return result.returncode
+        return returncode
     finally:
         subprocess.run(['docker', 'rm', '-f', name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
