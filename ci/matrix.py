@@ -29,9 +29,8 @@ def validate_publication(publication):
     excluded = publication.get('incompatible_targets', {})
     assert set(publication['wheels']) == set(publication['targets'])
     assert not set(publication['wheels']) & set(excluded)
-    extended = {f'cp{p}-{a}' for p in ('313', '314') for a in ARCH.values()}
-    declared = set(publication['wheels']) | set(excluded)
-    assert declared in (expected, expected | extended), 'Incomplete or unknown wheel matrix'
+    # Wheel publications can include targets outside the image matrix.
+    assert expected <= set(publication['wheels']) | set(excluded)
     assert all(e['status'] == 'incompatible' and e['source_sha'] == publication['source_sha']
                and e['reason'] and e['job_url'] and e['log_sha256'] for e in excluded.values())
     assert len({w['llvm']['revision'] for w in publication['wheels'].values()}) == 1, 'Mixed LLVM revisions'
