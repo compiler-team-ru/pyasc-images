@@ -3,7 +3,7 @@ import unittest
 from matrix import expand, merge_pair, pending, validate_publication
 
 
-def fixture(extra_pythons=()):
+def fixture():
     arches = {'amd64': 'x86_64', 'arm64': 'aarch64'}
     lock = {'ubuntu': {u: {a: 'ubuntu@sha256:' + a for a in arches} for u in ('22.04', '24.04')},
             'cann': {c: {a: {'sha256': c + a} for a in arches} for c in ('9.0.0', '9.2.0')},
@@ -12,7 +12,7 @@ def fixture(extra_pythons=()):
     wheels = {f'cp{p.replace(".", "")}-{a}':
               {'filename': 'pyasc_dev-1.1.1.dev1-cp' + p.replace('.', '') + '-cp' + p.replace('.', '') + '-manylinux_2_28_' + a + '.whl', 'sha256': p + a,
                'url': 'https://files.pythonhosted.org/a.whl', 'llvm': {'revision': 'a' * 40}}
-              for p in (*lock['python'], *extra_pythons) for a in arches.values()}
+              for p in lock['python'] for a in arches.values()}
     publication = {'schema_version': 1, 'status': 'complete', 'source_repository': 'compiler-team-ru/pyasc',
                    'source_sha': 'a' * 40, 'version': '1.1.1.dev1', 'wheels': wheels,
                    'targets': {k: v['sha256'] for k, v in wheels.items()}}
@@ -30,9 +30,14 @@ class MatrixTests(unittest.TestCase):
         for cell in cells:
             self.assertIn('-cp' + cell['environment']['python'].replace('.', '') + '-', cell['wheel']['filename'])
 
-    def test_extended_wheel_matrix_preserves_image_selection(self):
-        cells = expand(*fixture(('3.13', '3.14')), 'r' * 64, 'e' * 64)
-        self.assertEqual(cells, self.cells())
+    def test_image_selection_follows_configured_python_versions(self):
+        lock, publication = fixture()
+        for version, source in lock['python'].items():
+            with self.subTest(python=version):
+                selected = {**lock, 'python': {version: source}}
+                cells = expand(selected, publication, 'r' * 64, 'e' * 64)
+                self.assertEqual(cells, [c for c in self.cells()
+                                        if c['environment']['python'] == version])
 
     def test_unchanged_skips_and_failures_retry(self):
         cells = self.cells()
@@ -65,11 +70,11 @@ class MatrixTests(unittest.TestCase):
         publication['targets']['cp39-x86_64'] = 'bad'
         with self.assertRaises(AssertionError):
             validate_publication(publication)
-        _, publication = fixture()
+        lock, publication = fixture()
         del publication['wheels']['cp39-x86_64']
         del publication['targets']['cp39-x86_64']
-        with self.assertRaises(AssertionError):
-            validate_publication(publication)
+        with self.assertRaisesRegex(AssertionError, 'Missing wheel or incompatibility for cp39-x86_64'):
+            expand(lock, publication, 'r' * 64, 'e' * 64)
 
     def test_incompatible_wheels_remain_in_complete_report(self):
         lock, publication = fixture()

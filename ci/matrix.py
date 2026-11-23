@@ -25,12 +25,9 @@ def recipe_hash(root):
 def validate_publication(publication):
     assert publication['schema_version'] in (1, 2) and publication['status'] == 'complete'
     assert publication['source_repository'] == 'compiler-team-ru/pyasc'
-    expected = {f'cp{p.replace(".", "")}-{a}' for p in ('3.9', '3.10', '3.11', '3.12') for a in ARCH.values()}
     excluded = publication.get('incompatible_targets', {})
     assert set(publication['wheels']) == set(publication['targets'])
     assert not set(publication['wheels']) & set(excluded)
-    # Wheel publications can include targets outside the image matrix.
-    assert expected <= set(publication['wheels']) | set(excluded)
     assert all(e['status'] == 'incompatible' and e['source_sha'] == publication['source_sha']
                and e['reason'] and e['job_url'] and e['log_sha256'] for e in excluded.values())
     assert len({w['llvm']['revision'] for w in publication['wheels'].values()}) == 1, 'Mixed LLVM revisions'
@@ -68,6 +65,8 @@ def expand(lock, publication, recipe, environment_recipe):
         environment = base['environment']
         ubuntu, cann, python, arch = (environment[k] for k in ('ubuntu', 'cann', 'python', 'arch'))
         target = f'cp{python.replace(".", "")}-{ARCH[arch]}'
+        assert target in publication['wheels'] or target in publication.get('incompatible_targets', {}), \
+            f'Missing wheel or incompatibility for {target}'
         env_id = base['environment_id']
         cell = {'key': f'u{ubuntu}-c{cann}-p{python}-{arch}', 'environment': environment,
                 'environment_id': env_id, 'environment_image': f'{REGISTRY}/pyasc-env:{env_id}',
