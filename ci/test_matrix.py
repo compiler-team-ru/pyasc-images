@@ -30,6 +30,26 @@ class MatrixTests(unittest.TestCase):
         for cell in cells:
             self.assertIn('-cp' + cell['environment']['python'].replace('.', '') + '-', cell['wheel']['filename'])
 
+    def test_extended_wheel_matrix_preserves_image_selection(self):
+        lock, publication = fixture()
+        original = expand(lock, publication, 'r' * 64, 'e' * 64)
+        for version in ('313', '314'):
+            for arch in ('aarch64', 'x86_64'):
+                target = f'cp{version}-{arch}'
+                wheel = copy.deepcopy(publication['wheels'][f'cp312-{arch}'])
+                wheel['filename'] = wheel['filename'].replace('cp312', f'cp{version}')
+                publication['wheels'][target] = wheel
+                publication['targets'][target] = wheel['sha256']
+        self.assertEqual(expand(lock, publication, 'r' * 64, 'e' * 64), original)
+        changed = copy.deepcopy(publication)
+        changed['targets']['cp314-aarch64'] = 'bad'
+        with self.assertRaises(AssertionError):
+            validate_publication(changed)
+        del publication['wheels']['cp314-aarch64']
+        del publication['targets']['cp314-aarch64']
+        with self.assertRaises(AssertionError):
+            validate_publication(publication)
+
     def test_unchanged_skips_and_failures_retry(self):
         cells = self.cells()
         previous = [{**c, 'status': 'pass'} for c in cells]
