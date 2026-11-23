@@ -30,6 +30,15 @@ class MatrixTests(unittest.TestCase):
         for cell in cells:
             self.assertIn('-cp' + cell['environment']['python'].replace('.', '') + '-', cell['wheel']['filename'])
 
+    def test_image_selection_follows_configured_python_versions(self):
+        lock, publication = fixture()
+        for version, source in lock['python'].items():
+            with self.subTest(python=version):
+                selected = {**lock, 'python': {version: source}}
+                cells = expand(selected, publication, 'r' * 64, 'e' * 64)
+                self.assertEqual(cells, [c for c in self.cells()
+                                        if c['environment']['python'] == version])
+
     def test_unchanged_skips_and_failures_retry(self):
         cells = self.cells()
         previous = [{**c, 'status': 'pass'} for c in cells]
@@ -61,10 +70,11 @@ class MatrixTests(unittest.TestCase):
         publication['targets']['cp39-x86_64'] = 'bad'
         with self.assertRaises(AssertionError):
             validate_publication(publication)
-        _, publication = fixture()
+        lock, publication = fixture()
         del publication['wheels']['cp39-x86_64']
-        with self.assertRaises(AssertionError):
-            validate_publication(publication)
+        del publication['targets']['cp39-x86_64']
+        with self.assertRaisesRegex(AssertionError, 'Missing wheel or incompatibility for cp39-x86_64'):
+            expand(lock, publication, 'r' * 64, 'e' * 64)
 
     def test_incompatible_wheels_remain_in_complete_report(self):
         lock, publication = fixture()

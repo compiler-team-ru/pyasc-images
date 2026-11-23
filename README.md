@@ -27,6 +27,17 @@ version and comma-separated cell keys, for example
 `u22.04-c9.0.0-p3.11-amd64`. A repeated run skips verified cells and retries
 failed or missing cells.
 
+Each existing publication resumes the recipe commit recorded by its matrix
+release tag, including that commit's input lock and build/verification code.
+Completed matrices remain complete when the current CI recipe changes; partial
+matrices retry only their missing or failed cells. New publications use the
+current recipe. Historical results keep their original recipe and image digests.
+
+To intentionally apply the current recipe to an existing publication, manually
+select its exact `version` and set `rebuild: true` (optionally with `cells`).
+This creates a separate report when the recipe changed; it never overwrites a
+published image tag or rebuilds verified cells under an unchanged recipe.
+
 ## Run an experiment
 
 Select an image from a matrix release and use its digest:
