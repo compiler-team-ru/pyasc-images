@@ -1,5 +1,6 @@
 """Resolve durable publications, assemble a matrix, and retain verified results."""
 import ast
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 
@@ -58,8 +60,8 @@ def output(key, value):
         stream.write(key + '=' + str(value) + '\n')
 
 
-def environment_recipe():
-    return identity({name: file_hash(ROOT / name)
+def environment_recipe(root=ROOT):
+    return identity({name: file_hash(root / name)
                      for name in ('Dockerfile', 'entrypoint.sh', 'requirements.lock')})
 
 
@@ -76,6 +78,20 @@ def build_environment():
     print(ensure_environment(cell))
 
 
+@lru_cache(maxsize=None)
+def recorded_recipe(commit):
+    """Read immutable recipe inputs without executing historical code."""
+    assert re.fullmatch(r'[0-9a-f]{40}', commit), 'Expected an immutable recipe commit'
+    with tempfile.TemporaryDirectory(prefix='pyasc-recipe-') as directory:
+        root = Path(directory)
+        run('git', 'init', '-q', directory)
+        run('git', '-C', directory, 'fetch', '-q', '--depth=1',
+            f'https://github.com/{REPO}.git', commit)
+        run('git', '-C', directory, 'checkout', '-q', '--detach', 'FETCH_HEAD')
+        assert subprocess.check_output(['git', '-C', directory, 'rev-parse', 'HEAD'], text=True).strip() == commit
+        return json.loads((root / 'inputs.lock.json').read_text()), recipe_hash(root), environment_recipe(root)
+
+
 def plan():
     lock = json.loads((ROOT / 'inputs.lock.json').read_text())
     recipe = recipe_hash(ROOT)
@@ -86,6 +102,8 @@ def plan():
                 and any(a['name'] == 'wheel-manifest.json' for a in r['assets'])]
     version = os.environ.get('INPUT_VERSION', '')
     selected = os.environ.get('INPUT_CELLS', '')
+    rebuild = os.environ.get('INPUT_REBUILD', 'false') == 'true'
+    assert not rebuild or version, 'Rebuilding with the current recipe requires an exact version'
     candidates = []
     for release in sorted(releases, key=lambda r: r['published_at']):
         if version and release['tag_name'] != 'wheel-' + version:
@@ -101,10 +119,31 @@ def plan():
         candidates = [(r, p) for r, p in candidates if r['published_at'] >= bootstrap]
     chosen = None
     for release, publication in candidates:
-        cells = expand(lock, publication, recipe, env_recipe)
-        tag = 'matrix-' + publication['version'] + '-' + recipe[:16]
-        prior = asset_json(image_releases[tag], 'matrix.json') if tag in image_releases else {}
+        current_tag = 'matrix-' + publication['version'] + '-' + recipe[:16]
+        prior_releases = [r for r in image_releases.values()
+                          if r['tag_name'].startswith('matrix-' + publication['version'] + '-')
+                          and any(a['name'] == 'matrix.json' for a in r['assets'])
+                          and (not rebuild or r['tag_name'] == current_tag)]
+        prior_release = max(prior_releases, key=lambda r: (r['published_at'], r['tag_name']), default=None)
+        prior = asset_json(prior_release, 'matrix.json') if prior_release else {}
+        build_lock, build_recipe, build_env_recipe = lock, recipe, env_recipe
+        recipe_commit = os.environ['GITHUB_SHA']
+        tag = current_tag
+        if prior_release:
+            assert prior['version'] == publication['version'] and prior['source_sha'] == publication['source_sha']
+            tag = prior_release['tag_name']
+            recipe_commit = gh(f'repos/{REPO}/commits/{tag}')['sha']
+            build_lock, build_recipe, build_env_recipe = recorded_recipe(recipe_commit)
+            assert build_recipe == prior['recipe'], 'Recorded recipe hash differs from its commit'
+            assert tag == 'matrix-' + publication['version'] + '-' + build_recipe[:16]
+        cells = expand(build_lock, publication, build_recipe, build_env_recipe)
         previous = prior.get('cells', [])
+        if prior:
+            assert len(previous) == len(cells) and {c['id'] for c in previous} == {c['id'] for c in cells}, \
+                'Recorded matrix inputs differ; refusing to rebuild historical cells'
+            by_id = {c['id']: c for c in previous}
+            assert all(all(by_id[c['id']].get(k) == v for k, v in c.items()) for c in cells), \
+                'Recorded cell inputs differ from the pinned recipe'
         todo = pending(cells, previous, selected)
         passed_keys = {r['key'] for r in previous if r['status'] == 'pass'}
         paired = sum(c['environment']['arch'] == 'amd64' and c['key'] in passed_keys
@@ -113,7 +152,8 @@ def plan():
                                  for m in prior.get('manifests', []))
         needs_report = bool(todo or not prior or paired != complete_manifests)
         chosen = {'publication': publication, 'cells': cells, 'previous': previous,
-                  'tag': tag, 'recipe': recipe, 'pending': todo, 'needs_report': needs_report}
+                  'tag': tag, 'recipe': build_recipe, 'recipe_commit': recipe_commit,
+                  'pending': todo, 'needs_report': needs_report}
         if needs_report:
             break
     assert chosen, 'No complete wheel publication'
@@ -122,6 +162,7 @@ def plan():
     output('matrix', json.dumps({'include': [{'key': c['key'], 'runner': c['runner']} for c in chosen['pending']]}))
     output('count', len(chosen['pending']))
     output('tag', chosen['tag'])
+    output('recipe_commit', chosen['recipe_commit'])
     output('report', str(chosen['needs_report']).lower())
     print(json.dumps({'version': chosen['publication']['version'], 'pending': len(chosen['pending']), 'cells': len(chosen['cells'])}))
 
@@ -313,6 +354,7 @@ def finish():
             manifests.append({'tag': tag, 'status': 'failed', 'reason': str(error)})
     report = {'schema_version': 1, 'version': plan_data['publication']['version'],
               'source_sha': plan_data['publication']['source_sha'], 'recipe': plan_data['recipe'],
+              'recipe_commit': plan_data['recipe_commit'],
               'cells': cells, 'manifests': manifests,
               'scope': 'Upstream vector-add compile and simulator smoke, 128 float32 elements. No hardware or broad numerical qualification.'}
     Path('matrix.json').write_text(json.dumps(report, indent=2) + '\n')
